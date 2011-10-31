@@ -1,3 +1,4 @@
+from __future__ import print_function
 from caa import datastore
 from caa import ArchivedPV
 
@@ -12,9 +13,9 @@ except:
     from caa.utils.OrderedDict import OrderedDict
 import json
 #from multiprocessing import cpu_count, Queue, Process
-from multiprocessing import cpu_count
-from threading import Thread 
-from Queue import Queue
+from multiprocessing import cpu_count, Process, current_process, Queue
+from threading import Thread , current_thread
+#from Queue import Queue
 import logging
 
 import epics
@@ -48,7 +49,7 @@ class WorkersPool(object):
     def __init__(self, num_workers=cpu_count()):
         self._task_queue = Queue()
         self._done_queue = Queue()
-        self._workers = [ Thread(target=self.worker) for _ in range(num_workers) ]
+        self._workers = [ Process(target=self.worker, name=("Worker-%d"%i)) for i in range(num_workers) ]
         
 
     @property
@@ -69,24 +70,39 @@ class WorkersPool(object):
             :param callable task: a callable object 
             :param list args: arguments to be passed to ``task``
         """
+        logger.info("Submitting task '%s' with arguments '%s'", task, args)
         self._task_queue.put((task, args))
 
     def worker(self):
+        logger.debug("At worker function @ %s", current_process())
         for t,args in iter(self._task_queue.get, self.STOP_SENTINEL):
+            logger.debug("Worker '%s' processing task '%s'", current_process(), t)
             t_res = t(*args)
             self._done_queue.put(t_res)
+        logger.debug("Worker %s exiting", current_process())
 
+    def get_result(self, block=False, timeout=None):
+        """ Returns the results of a previously submitted job. 
+
+            :param boolean block: If ``True``, will block until a result in available. Otherwise,
+            return an item if one is immediately available, else raise :exc:`Queue.Empty`.
+            :param float timeout: If blocking, how many seconds to wait. If no result 
+            is available after that many seconds, :exc:`Queue.Empty` exception is raised.
+        """
+        return self._subspool.done_queue.get(block, timeout)
 
     def start(self):
         for w in self._workers:
-            w.daemon = False
+            w.daemon = True
+            logger.info("Starting worker %s", w)
             w.start()
 
     def stop(self):
+        logger.info("Stopping workers...")
         for _ in range(self.num_workers):
             self._task_queue.put(self.STOP_SENTINEL)
 
-def _subscription_cb(self, **kw):
+def subscription_cb(**kw):
     """ Internally called when a new value arrives for a subscribed PV.
     
         :param dict kw: will contain the following information about the PV:
@@ -173,10 +189,12 @@ def _subscription_cb(self, **kw):
     # store in DB
     #assert 'pvname' in kw
     #self._datastore.write( kw['pvname'], kw )
-    pass
-    
+    print("PV %(pvname)s changed to value %(value)s" % kw)
 
-
+def epics_subscribe(pvname):
+    logger.info("EPICS-subscribing to %s", pvname)
+    pv = epics.PV(pvname, callback=subscription_cb)
+    return pv.pvname
 
 
 class Controller(object):
@@ -196,12 +214,8 @@ class Controller(object):
         archived_pv = ArchivedPV(pv_name, mode, scan_period, monitor_delta)
         self._subs[pv_name] = archived_pv
 
-        def _epics_subscribe(PV, pvname):
-            logger.info("EPICS-subscribing to %s", pvname)
-            return PV(pvname, callback=_subscription_cb)
-
         # submit subscription request to queue
-        self._subspool.submit(_epics_subscribe, (epics.PV, pv_name, ))
+        self._subspool.submit(epics_subscribe, (pv_name, ))
         #_epics_subscribe(epics.PV, pv_name)
 
 
