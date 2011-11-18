@@ -1,25 +1,18 @@
 from __future__ import print_function
-from caa import datastore
-from caa import ArchivedPV
 
-try:
-    import ConfigParser as configparser
-except:
-    import configparser
-
-try:
-    from collections import OrderedDict
-except:
-    from caa.utils.OrderedDict import OrderedDict
 import json
-#from multiprocessing import cpu_count, Queue, Process
-from multiprocessing import cpu_count, Process, current_process, Queue
-from threading import Thread , current_thread
-#from Queue import Queue
 import logging
+import uuid
+import time
+import collections
+from multiprocessing import cpu_count, Process, current_process, JoinableQueue, Queue
+from zlib import adler32
+
+from caa import ArchivedPV, SubscriptionMode
+import datastore
+import caa.config as config
 
 import epics
-
 
 """
 .. module:: controller
@@ -30,277 +23,260 @@ import epics
 
 logger = logging.getLogger('controller')
 
-class SubscriptionMode:
-    """
-        :attr:`MONITOR`: Save every value greater than the given delta. 
-        If no delta is specified, the PV's ADEL will be used.
 
-        :attr:`SCAN`: Save with a given period.
+#######################################################
 
-        See also :meth:`Controller.subscribe`
-    """
-    MONITOR = 'Monitor'
-    SCAN = 'Scan'
+class Task(object):
+    def __init__(self, name, f, *args):
+        self.name = name
+        self.f = f
+        self.args = args
+        self.done = False
+
+    def __call__(self, state):
+        return self.f(state, *self.args)
+
+    def __str__(self):
+        return 'Task<%s(%r)>. Done: %s' % (self.name, self.args, self.done)
+
 
 class WorkersPool(object):
 
     STOP_SENTINEL = '__STOP'
 
     def __init__(self, num_workers=cpu_count()):
-        self._task_queue = Queue()
         self._done_queue = Queue()
         self._workers = [ Process(target=self.worker, name=("Worker-%d"%i)) for i in range(num_workers) ]
+        self._task_queues = dict( (w.name, JoinableQueue()) for w in self._workers  )
+        self._running = False
         
 
     @property
     def num_workers(self):
         return len(self._workers)
 
-    @property
-    def task_queue(self):
-        return self._task_queue 
+    def _submit(self, task):  
+        if not self._running:
+            self.start()
+            self._running = True
 
-    @property
-    def done_queue(self):
-        return self._done_queue
+        reqid = uuid.uuid4()
+        # calculate the hash for the task based on its name
+        h = adler32(task.name) % self.num_workers
+        chosen_worker = self._workers[h]
+        self._task_queues[chosen_worker.name].put((reqid, task))
 
-    def submit(self, task, args):
-        """ Adds a callable (``task``) to the pool.
+        return reqid
 
-            :param callable task: a callable object 
-            :param list args: arguments to be passed to ``task``
+        
+    def request_subscription(self, sub_task):
+        """ Adds a :class:`Task` to the pool. 
+
+            Returns a unique id that can be used to identify the subscription request 
+            upon completion.
+
+            :param Task: a :class:`Task` instance 
+
         """
-        logger.info("Submitting task '%s' with arguments '%s'", task, args)
-        self._task_queue.put((task, args))
+        logger.info("Submitting subscription request '%s'", sub_task)
+        return self._submit(sub_task)
+
+    def request_unsubscription(self, unsub_task):
+        logger.info("Submitting unsubscription request '%s'", unsub_task)
+        return self._submit(unsub_task)
+
 
     def worker(self):
-        logger.debug("At worker function @ %s", current_process())
-        for t,args in iter(self._task_queue.get, self.STOP_SENTINEL):
-            logger.debug("Worker '%s' processing task '%s'", current_process(), t)
-            t_res = t(*args)
-            self._done_queue.put(t_res)
-        logger.debug("Worker %s exiting", current_process())
+        wname = current_process().name
+        logger.debug("At worker function '%s'", wname)
+        state = collections.defaultdict(dict)
+        q = self._task_queues[wname]
+        for reqid, task in iter(q.get, self.STOP_SENTINEL):
+            logger.debug("Worker '%s' processing task '%s' with id '%s'", 
+                    wname, task, reqid)
+            
+            t_res = task(state[task.name])  
 
-    def get_result(self, block=False, timeout=None):
-        """ Returns the results of a previously submitted job. 
+            task.result = t_res
+            logger.debug("Task with id '%s' for PV '%s' completed. Result: '%r'", \
+                    reqid, task.name, task.result )
+            self._done_queue.put((reqid, task))
+            q.task_done()
+
+            if not state[task.name]:
+                del state[task.name]
+        logger.info("Worker %s exiting: ", current_process())
+
+
+
+    def get_result(self, block=True, timeout=None):
+        """ Returns the receipt and *a* :class:``Task`` instance with 
+            a populated ``result`` attribute. 
 
             :param boolean block: If ``True``, will block until a result in available. Otherwise,
             return an item if one is immediately available, else raise :exc:`Queue.Empty`.
             :param float timeout: If blocking, how many seconds to wait. If no result 
             is available after that many seconds, :exc:`Queue.Empty` exception is raised.
+            :rtype: a list of the form ``(receipt, :class:`Task`-instance)``
         """
-        return self._subspool.done_queue.get(block, timeout)
+        return self._done_queue.get(block, timeout)
+ 
+    def join(self):
+        """ Blocks until all pending requests have finished """
+        logger.debug("Blocking until all pending requests finish.")
+        [ q.join for q in self._task_queues.itervalues() ]
+
 
     def start(self):
-        for w in self._workers:
-            w.daemon = True
-            logger.info("Starting worker %s", w)
-            w.start()
+        if self._running: 
+            logger.warn("Workers already running.")
+        else:
+            for w in self._workers:
+                w.daemon = True
+                logger.info("Starting worker %s", w)
+                w.start()
 
     def stop(self):
-        logger.info("Stopping workers...")
-        for _ in range(self.num_workers):
-            self._task_queue.put(self.STOP_SENTINEL)
+        if not self._running:
+            logger.warn("Workers weren't running.")
+        else:
+            logger.info("Stopping workers...")
+            [ q.put(self.STOP_SENTINEL) for q in self._task_queues.itervalues() ]
+            self._running = False
 
-def subscription_cb(**kw):
-    """ Internally called when a new value arrives for a subscribed PV.
+
+##############################################
+
+workers = WorkersPool(config.CONTROLLER['num_workers'])
+
+def subscribe(pvname, mode=SubscriptionMode.MONITOR, scan_period=0, monitor_delta=0):
+    """ Adds the PV to the list of PVs to be archived. 
     
-        :param dict kw: will contain the following information about the PV:
-
-         pvname
-             the name of the pv.
-
-         value
-             the latest value.
-
-         char_value
-             string representation of value.
-
-         count
-             the number of data elements
-
-         ftype
-             the numerical CA type indicating the data type
-
-         type
-             the python type for the data
-
-         status
-             the status of the PV (1 for OK)
-
-         precision
-             number of decimal places of precision for floating point values
-
-         units
-             string for PV units
-
-         severity
-             PV severity
-
-         timestamp
-             timestamp from CA server.
-
-         read_access
-             read access (True or False)
-
-         write_access
-             write access (True or False)
-
-         access
-             string description of read- and write-access
-
-         host
-             host machine and CA port serving PV
-
-         enum_strs
-             the list of enumeration strings
-
-         upper_disp_limit
-             upper display limit
-
-         lower_disp_limit
-             lower display limit
-
-         upper_alarm_limit
-             upper alarm limit
-
-         lower_alarm_limit
-             lower alarm limit
-
-         upper_warning_limit
-             upper warning limit
-
-         lower_warning_limit
-             lower warning limit
-
-         upper_ctrl_limit
-             upper control limit
-
-         lower_ctrl_limit
-             lower control limit
-
-         chid
-             integer channel ID
-
-         cb_info
-             (index, self) tuple containing callback ID and the PV object
-
+        Returns a unique id (receipt) for the subscription request. 
     """
-    # store in DB
-    #assert 'pvname' in kw
-    #self._datastore.write( kw['pvname'], kw )
-    print("PV %(pvname)s changed to value %(value)s" % kw)
+    apv = ArchivedPV(pvname, mode, scan_period, monitor_delta)
+    datastore.save_pv(apv)
 
-def epics_subscribe(pvname):
-    logger.info("EPICS-subscribing to %s", pvname)
-    pv = epics.PV(pvname, callback=subscription_cb)
-    return pv.pvname
+    # submit subscription request to queue
+    request = Task(pvname , epics_subscribe, apv)
+    return workers.request_subscription(request)
 
 
-class Controller(object):
-    def __init__(self, keyspace, column_family):
-        self._subs = {} #values being ArchivedPV instances
+def unsubscribe(pvname):
+    """ Stops archiving the PV """
+    apv = get_info(pvname)
+    #FIXME: complain if missing key?
 
-        self._datastore = datastore.DataStore(keyspace, column_family)
+    if apv:
+        datastore.remove_pv(apv)
+        request = Task(apv.name , epics_unsubscribe, apv)
+        return workers.request_unsubscription(request)
+    return False
 
-        self._subspool = WorkersPool()
-        self._subspool.start()
+def get_result(block=True, timeout=None):
+    """ Returns the receipt and *a* :class:`Task` instance with a ``result`` attribute.
 
-        self._pvs = []
-
-    def subscribe(self, pv_name, mode=SubscriptionMode.MONITOR, scan_period=0, monitor_delta=0):
-        """ Adds the PV to the list of PVs to be archived """
-        
-        archived_pv = ArchivedPV(pv_name, mode, scan_period, monitor_delta)
-        self._subs[pv_name] = archived_pv
-
-        # submit subscription request to queue
-        self._subspool.submit(epics_subscribe, (pv_name, ))
-        #_epics_subscribe(epics.PV, pv_name)
+        See :meth:`WorkersPool.get_result` 
+    """
+    return workers.get_result()
 
 
-    def unsubscribe(self, pv_name):
-        """ Stops archiving the PV """
-        #FIXME: complain if missing key?
-        if pv_name in self._subs:
-            del self._subs[pv_name]
+def get_info(pvname):
+    """ Returns an :class:`ArchivedPV` instance for the given subscribed PV name.
 
-    def get_info(self, pv_name):
-        """ Returns an :class:`ArchivedPV` instance for the given subscribed PV name.
+        If there's no subscription to that PV, ``None`` is returned.
+    """
+    return datastore.read_pv(pvname) 
 
-            If there's no subscription to that PV, ``None`` is returned.
-        """
-        return self._subs.get(pv_name, None)
+def get_status(pvnames):
+    """ Returns a dictionary keyed by the PV name containing their
+        status information. 
 
-    @property
-    def subscribed_pvs(self):
-        """ The sorted list of all PV *names* being archived (any mode) 
-        
-            See also: :class:`SubscriptionMode`
-        """
-        res = sorted( pv._name for pv in self._subs.values() )
-        return res
-
-    @property
-    def monitored_pvs(self):
-        """ The sorted list of *monitored* PV names.
-        
-            See also: :class:`SubscriptionMode`
-        """
-        res = sorted( pv._name for pv in self._subs.values() if pv._mode == SubscriptionMode.MONITOR )
-        return res
-
-    @property
-    def scanned_pvs(self):
-        """ The sorted list of *scanned* PV names.
-            
-            See also: :class:`SubscriptionMode`
-        """ 
-        res = sorted( pv._name for pv in self._subs.values() if pv._mode == SubscriptionMode.SCAN )
-        return res
+        The status information, if present, is represented by a dictionary keyed by
+        ``timestamp`` and ``connected``. If no information is present for
+        a given PV, an empty dictionary is returned.
+    """
+    return datastore.read_latest_status(pvnames)
 
 
-    def get_value(self, pv_name):
-        """ Returns latest archived data for the PV """
-        pass
-
-    def get_values(self, pv_names_list):
-        """ Returns the latest archived data for the given PVs.
-
-            This method is more efficient that individual calls to
-            :meth:`get_value`. 
-
-            :rtype: a dictionary keyed by the PV name.
-        """
-        return self._datastore.read(pv_names_list)
-        
-
-    def load_config(self, fileobj):
-        """ Restore the state defined by the config """
-        for line in fileobj:
-            d = dict(json.loads(line))
-            self.subscribe(d['name'], d['mode'], d['scan_period'], d['monitor_delta'])
+def get_values(pvname, limit=100):
+    """ Returns latest archived data for the PV as a list with at most ``limit`` elements """
+    return datastore.read_latest_values(pvname, limit)
 
 
-    def save_config(self, fileobj):
-        """ Save current subscription state. """
-        # get a list of the ArchivedPV values 
-        for archived_pv in self._subs.values():
-            fileobj.write(json.dumps(archived_pv, cls=ArchivedPV.APVJSONEncoder) + '\n')
-        
+def load_config(fileobj):
+    """ Restore the state defined by the config.
+    
+        Returns a list with the receipts of the restored subscriptions.
+    """
+    receipts = []
+    for line in fileobj:
+        d = dict(json.loads(line))
+        receipt = subscribe(d['name'], d['mode'], d['scan_period'], d['monitor_delta'])
+        receipts.append(receipt)
+    return receipt
 
-    def shutdown(self):
-        self._subspool.stop()
 
-    def __del__(self):
-        self.shutdown()
+def save_config(fileobj):
+    """ Save current subscription state. """
+    # get a list of the ArchivedPV values 
+    for archived_pv in subscriptions.values():
+        fileobj.write(json.dumps(archived_pv, cls=ArchivedPV.APVJSONEncoder) + '\n')
+
+def shutdown():
+    workers.stop()
+
+
+##################### TASKS #######################
+def epics_subscribe(state, archived_pv):
+    """ Function to be run by the worker in order to subscribe """
+    logger.info("EPICS-subscribing to %s", archived_pv)
+    datastore.save_pv(archived_pv)
+    conn_timeout = config.CONTROLLER['epics_connection_timeout']
+
+    # DBE_VALUE--when the channel's value changes by more than MDEL.
+    # DBE_LOG--when the channel's value changes by more than ADEL.
+    # DBE_ALARM--when the channel's alarm state changes.
+    sub_mask = epics.dbr.DBE_ALARM | epics.dbr.DBE_LOG | epics.dbr.DBE_VALUE
+
+    pv = epics.PV(archived_pv.name, 
+            callback=subscription_cb, 
+            connection_callback=connection_cb,             
+            connection_timeout=conn_timeout,
+            auto_monitor=sub_mask
+            )
+    connected = pv.connected
+    connection_cb(archived_pv.name, connected) # we need it for pv's that can't connect at startup
+
+    state['pv'] = pv
+    return True
+
+def epics_unsubscribe(state, archived_pv):
+    """ Function to be run by the worker in order to unsubscribe """
+    logger.info("EPICS-unsubscribing to %s", archived_pv)
+    pv = state['pv']
+    pv.disconnect()
+    del state['pv']
+
+    datastore.remove_pv(archived_pv)
+    return True
 
 
 
+##################### CALLBACKS #######################
+def subscription_cb(**kw):
+    """ Internally called when a new value arrives for a subscribed PV. """
+    logger.debug("PV callback invoked: %(pvname)s changed to value %(value)s at %(timestamp)s" % kw)
 
+    #generate the id for the update
+    update_id = uuid.uuid1()
+    datastore.save_update(update_id, kw['pvname'], kw['value'], kw['type']) #TODO: add more stuff
 
-
-
+def connection_cb(pvname, conn, **kw):
+    logger.debug("PV '%s' connected: %s", pvname, conn)
+    
+    status_id = uuid.uuid1()
+    datastore.save_status(status_id, pvname, conn)
 
 
 
