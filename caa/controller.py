@@ -3,7 +3,6 @@ from __future__ import print_function
 import json
 import logging
 import uuid
-import time
 import collections
 from multiprocessing import cpu_count, Process, current_process, JoinableQueue, Queue
 from zlib import adler32
@@ -14,15 +13,7 @@ import caa.config as config
 
 import epics
 
-"""
-.. module:: controller
-    :synopsis: Interface to the outside world
-
-.. moduleauthor:: David Garcia Quintas <dgarciaquintas@lbl.gov>
-"""
-
 logger = logging.getLogger('controller')
-
 
 #######################################################
 
@@ -69,7 +60,7 @@ class WorkersPool(object):
         return reqid
 
         
-    def request_subscription(self, sub_task):
+    def request_subscription(self, pvname):
         """ Adds a :class:`Task` to the pool. 
 
             Returns a unique id that can be used to identify the subscription request 
@@ -78,8 +69,10 @@ class WorkersPool(object):
             :param Task: a :class:`Task` instance 
 
         """
-        logger.info("Submitting subscription request '%s'", sub_task)
-        return self._submit(sub_task)
+        task = Task(pvname , epics_subscribe, pvname)
+        logger.info("Submitting subscription request '%s'", task)
+        # submit subscription request to queue
+        return self._submit(task)
 
     def request_unsubscription(self, unsub_task):
         logger.info("Submitting unsubscription request '%s'", unsub_task)
@@ -148,30 +141,30 @@ class WorkersPool(object):
 ##############################################
 
 workers = WorkersPool(config.CONTROLLER['num_workers'])
+def subscribe(pvname, mode):
+    """ Requests subscription to ``pvname`` with mode ``mode``.
+        
+        Returns a unique ID for the request.
 
-def subscribe(pvname, mode=SubscriptionMode.MONITOR, scan_period=0, monitor_delta=0):
-    """ Adds the PV to the list of PVs to be archived. 
-    
-        Returns a unique id (receipt) for the subscription request. 
+        :param mode: Subclass of :class:`SubscriptionMode`.
+
     """
-    apv = ArchivedPV(pvname, mode, scan_period, monitor_delta)
-    datastore.save_pv(apv)
-
-    # submit subscription request to queue
-    request = Task(pvname , epics_subscribe, apv)
-    return workers.request_subscription(request)
-
+    datastore.save_pv(pvname, mode)
+    return workers.request_subscription(pvname)
 
 def unsubscribe(pvname):
-    """ Stops archiving the PV """
+    """ Stops archiving the PV. 
+    
+        Returns a unique request id or `False` if the given `pvname` was unknown.
+    """
     apv = get_info(pvname)
-    #FIXME: complain if missing key?
-
     if apv:
-        datastore.remove_pv(apv)
-        request = Task(apv.name , epics_unsubscribe, apv)
+        datastore.remove_pv(apv.name)
+        request = Task(apv.name , epics_unsubscribe, apv.name)
         return workers.request_unsubscription(request)
-    return False
+    else:
+        logger.warn("Requesting unsubscription to unknown PV '%s'", pvname)
+        return False
 
 def get_result(block=True, timeout=None):
     """ Returns the receipt and *a* :class:`Task` instance with a ``result`` attribute.
@@ -182,7 +175,7 @@ def get_result(block=True, timeout=None):
 
 
 def get_info(pvname):
-    """ Returns an :class:`ArchivedPV` instance for the given subscribed PV name.
+    """ Returns an :class:`ArchivedPV` representing the PV. 
 
         If there's no subscription to that PV, ``None`` is returned.
     """
@@ -211,27 +204,27 @@ def load_config(fileobj):
     """
     receipts = []
     for line in fileobj:
-        d = dict(json.loads(line))
-        receipt = subscribe(d['name'], d['mode'], d['scan_period'], d['monitor_delta'])
+        name, mode_dict, _ = json.loads(line)
+        mode = SubscriptionMode.parse(mode_dict)
+        receipt = subscribe(name, mode)
         receipts.append(receipt)
     return receipt
-
 
 def save_config(fileobj):
     """ Save current subscription state. """
     # get a list of the ArchivedPV values 
-    for archived_pv in subscriptions.values():
-        fileobj.write(json.dumps(archived_pv, cls=ArchivedPV.APVJSONEncoder) + '\n')
+    apvs = datastore.list_pvs()
+    for apv in apvs:
+        fileobj.write(json.dumps(apv, cls=ArchivedPV.JSONEncoder) + '\n', )
 
 def shutdown():
     workers.stop()
 
 
 ##################### TASKS #######################
-def epics_subscribe(state, archived_pv):
+def epics_subscribe(state, pvname):
     """ Function to be run by the worker in order to subscribe """
-    logger.info("EPICS-subscribing to %s", archived_pv)
-    datastore.save_pv(archived_pv)
+    logger.info("%s: EPICS-subscribing to %s", current_process(), pvname)
     conn_timeout = config.CONTROLLER['epics_connection_timeout']
 
     # DBE_VALUE--when the channel's value changes by more than MDEL.
@@ -239,26 +232,26 @@ def epics_subscribe(state, archived_pv):
     # DBE_ALARM--when the channel's alarm state changes.
     sub_mask = epics.dbr.DBE_ALARM | epics.dbr.DBE_LOG | epics.dbr.DBE_VALUE
 
-    pv = epics.PV(archived_pv.name, 
+    pv = epics.PV(pvname, 
             callback=subscription_cb, 
             connection_callback=connection_cb,             
             connection_timeout=conn_timeout,
             auto_monitor=sub_mask
             )
     connected = pv.connected
-    connection_cb(archived_pv.name, connected) # we need it for pv's that can't connect at startup
+    connection_cb(pvname, connected) # we need it for pv's that can't connect at startup
 
     state['pv'] = pv
     return True
 
-def epics_unsubscribe(state, archived_pv):
+def epics_unsubscribe(state, pvname):
     """ Function to be run by the worker in order to unsubscribe """
-    logger.info("EPICS-unsubscribing to %s", archived_pv)
+    logger.info("%s: EPICS-unsubscribing to %s", current_process(), pvname)
     pv = state['pv']
     pv.disconnect()
     del state['pv']
 
-    datastore.remove_pv(archived_pv)
+    datastore.remove_pv(pvname)
     return True
 
 

@@ -1,74 +1,69 @@
-import json
-try:
-    import configparser
-except ImportError:
-    import ConfigParser as configparser
-
-import pycassa
-
 import logging
+import json
+
+try:
+    from collections import namedtuple 
+except ImportError:
+    from caa.utils.namedtuple import namedtuple
 
 logger = logging.getLogger('caa')
 
-class SubscriptionMode:
-    """
-        :attr:`MONITOR`: Save every value greater than the given delta. 
-        If no delta is specified, the PV's ADEL will be used.
+class SubscriptionMode(object):
+    available_modes = []
 
-        :attr:`SCAN`: Save with a given period.
+    @classmethod
+    def parse(cls, d):
+        mode_name = d['mode']
+        try:
+            mode_cls = getattr(cls, mode_name)
+        except AttributeError:
+            raise ValueError("Invalid mode '%s'" % mode_name)
+        instance = mode_cls(**d)
+        return instance
+    @classmethod
+    def register(cls, mode):
+        cls.available_modes.append(mode)
+        setattr(cls, mode.name, mode)
 
-        See also :meth:`Controller.subscribe`
-    """
-    MONITOR = 'Monitor'
-    SCAN = 'Scan'
+    def as_dict(self):
+        raise NotImplemented("Subclasses must implement 'as_dict' method")
 
+class _Monitor(SubscriptionMode):
+    __slots__ = ('delta',)
+    name = 'Monitor'
 
-class ArchivedPV(object):
-    def __init__(self, name, mode, since, scan_period=0, monitor_delta=0):
-        self.name = name
-        self.mode = mode
-        self.scan_period = scan_period
-        self.monitor_delta = monitor_delta
-        self.since = since
-        
-    def __repr__(self):
-        return "'ArchivedPV(%s)'" % self.name
+    def __init__(self, delta=0.0, **dummy):
+        self.delta = delta
+
+    def as_dict(self):
+        return {'mode': self.name, 'delta': self.delta}
 
     def __str__(self):
-        s1 = 'PV name: %s, Mode: %s' % (self.name, self.mode)
-        if self.mode == SubscriptionMode.MONITOR:
-            s2 = '(delta = %f)' % self.monitor_delta
-        else:
-            s2 = '(period = %f)' % self.scan_period
-        return ' '.join([s1,s2])
+        return 'Monitor(delta=%s)' % self.delta
 
-    def __hash__(self):
-        return hash(self.name)
+class _Scan(SubscriptionMode):
+    __slots__ = ('period',)
+    name = 'Scan'
 
-    def __lt__(self, other): 
-        return self._name.__lt__(other.name)
+    def __init__(self, period=0.0, **dummy):
+        self.period = period
 
-    def __le__(self, other): 
-        return self._name.__le__(other.name)
+    def as_dict(self):
+        return {'mode': self.name, 'period': self.period}
 
-    def __eq__(self, other): 
-        return self._name.__eq__(other.name)
+    def __str__(self):
+        return 'Scan(period=%s)' % self.period
 
-    def __ne__(self, other): 
-        return self._name.__ne__(other.name)
+SubscriptionMode.register(_Monitor)
+SubscriptionMode.register(_Scan)
 
-    def __gt__(self, other): 
-        return self._name.__gt__(other.name)
-
-    def __ge__(self, other): 
-        return self._name.__ge__(other.name)
-
-    class APVJSONEncoder(json.JSONEncoder):
-        def default(self, apv):
-            if isinstance(apv, ArchivedPV):
-                return (('name', apv.name), ('mode', apv.mode),
-                        ('scan_period', apv.scan_period), ('monitor_delta', apv.monitor_delta), 
-                        ('since', apv.since))
-            return json.JSONEncoder(self, apv)
+# since represents the time of subscription
+ArchivedPV = namedtuple('ArchivedPV', 'name, mode, since')
+class _APVJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, SubscriptionMode):
+            return obj.as_dict()
+        return json.JSONEncoder.default(self, obj)
+ArchivedPV.JSONEncoder = _APVJSONEncoder
 
 

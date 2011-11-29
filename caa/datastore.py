@@ -15,6 +15,8 @@ except ImportError:
     from caa.utils.namedtuple import namedtuple
 import logging
 import time
+import itertools
+import json
 
 from caa import SubscriptionMode, ArchivedPV
 import caa.config as config
@@ -51,17 +53,28 @@ def create_schema(server, keyspace, replication_factor=1, recreate=False):
 
     if keyspace not in sm.list_keyspaces():
         #create it
-        sm.create_keyspace(keyspace, replication_factor)
+        sm.create_keyspace(keyspace, pycassa.system_manager.SIMPLE_STRATEGY,
+                {'replication_factor': '1'})
         logger.debug("Keyspace %s created", keyspace)
 
+
+        # pvs: {
+        #   pvname: {
+        #       'mode': mode name
+        #       '<mode_arg_1>': serialized value 
+        #       '<mode_arg_2>': serialized value
+        #       etc
+        #       'since': timestamp (long)
+        #   }
         sm.create_column_family(keyspace, 'pvs', 
                 comparator_type=pycassa.UTF8_TYPE, 
                 default_validation_class=pycassa.UTF8_TYPE, 
                 key_validation_class=pycassa.UTF8_TYPE)
         sm.alter_column(keyspace, 'pvs', 'mode', pycassa.UTF8_TYPE)
-        sm.alter_column(keyspace, 'pvs', 'monitor_delta', pycassa.FLOAT_TYPE)
-        sm.alter_column(keyspace, 'pvs', 'scan_period', pycassa.FLOAT_TYPE)
         sm.alter_column(keyspace, 'pvs', 'since', pycassa.LONG_TYPE)
+        # We create a secondary index on "mode" to be able to retrieve
+        # PVs by their subscription mode
+        sm.create_index(keyspace, 'pvs', 'mode', pycassa.UTF8_TYPE, index_name='mode_index')
 
         sm.create_column_family(keyspace, 'update_timeline', 
                 comparator_type=pycassa.LONG_TYPE, 
@@ -90,7 +103,7 @@ def reset_schema(server, keyspace, drop=False):
 
     sm.drop_keyspace(keyspace)
     if not drop: #recreate
-        create_schema(server, keyspace, ks_props['replication_factor'])
+        create_schema(server, keyspace, ks_props['strategy_options']['replication_factor'])
 
 
 ############### WRITERS ###########################
@@ -138,40 +151,80 @@ def save_status(status_id, pvname, connected):
     # }
     _cf('status_timeline').insert(pvname, {ts: d}, ttl = ttl)
 
-def save_pv(archived_pv):
-    ts = int(time.time() * 1e6) 
-    d = {'mode': archived_pv.mode, 'since': ts}
-    if archived_pv.mode == SubscriptionMode.MONITOR:
-        d['monitor_delta'] = archived_pv.monitor_delta
-    else:
-        d['scan_period'] = archived_pv.scan_period
+def save_pv(pvname, mode):
+    """ 
+        Register the given PV with the system. 
 
-    logger.debug("Saving pv subscription '(%s, %s)'", \
-            archived_pv.name, d)
-
-    # pvs: {
+        :param pvname: Name of the PV being persisted
+        :param mode: An instance of one of the inner classes of 
+        :class:`SubscriptionMode` 
+    """
     #   pvname: {
-    #       'mode': ... (str)
-    #       'monitor_delta' | 'scan_period': (float)
+    #       'mode': mode name
+    #       '<mode_arg_1>': serialized value 
+    #       '<mode_arg_2>': serialized value
+    #       etc
     #       'since': timestamp (long)
     #   }
-    _cf('pvs').insert(archived_pv.name, d)
+    ts = int(time.time() * 1e6) 
+    d = {'since': ts} 
 
-def remove_pv(archived_pv):
-    logger.debug("Removing pv subscription '%s'", archived_pv.name)
-    _cf('pvs').remove(archived_pv.name) 
+    mode_dict = mode.as_dict()
+    # for each of the mode_dict's values, ensure it's 
+    # in str form 
+    for k,v in mode_dict.iteritems():
+        mode_dict[k] = json.dumps(v)
+    d.update(mode_dict)
+
+    logger.debug("Saving pv subscription '(%s, %s)'", \
+            pvname, d)
+
+    _cf('pvs').insert(pvname, d)
+
+
+###### REMOVERS ######################
+def remove_pv(pvname):
+    logger.debug("Removing pv subscription '%s'", pvname)
+    _cf('pvs').remove(pvname) 
 
 
 ############### READERS ###########################
-
 def read_pv(pvname):
     try:
         cols = _cf('pvs').get(pvname)
-        apv = ArchivedPV(pvname, **cols)
-        print(apv)
+        
+        since = cols.pop('since')
+        
+        # cols's remaining values (mode as a dict) are json'd 
+        mode_dict = dict( (k, json.loads(v)) for k,v in cols.iteritems() )
+        
+        mode = SubscriptionMode.parse(mode_dict)
+
+        apv = ArchivedPV(pvname, mode, since)
     except NotFoundException:
         return None
     return apv
+def list_pvs(modes=SubscriptionMode.available_modes):
+    """ Returns an iterator over the list of PV's matching the modes in 
+        the ``modes`` list. 
+        If ``modes`` isn't specified, return all known PV's
+    """
+    res = iter([])
+    for mode in modes:
+        jsoned_mode_name = json.dumps(mode.name)
+        expr = pycassa.index.create_index_expression('mode', jsoned_mode_name)
+        cls = pycassa.index.create_index_clause([expr], count=2**31)
+        res = itertools.chain(res, _cf('pvs').get_indexed_slices(cls))
+    def APVGen():
+        for pv in res:
+            pvname, pvinfo = pv
+            since = pvinfo.pop('since') 
+            
+            mode_dict = dict( (k, json.loads(v)) for k,v in pvinfo.iteritems() )
+            mode = SubscriptionMode.parse(mode_dict)
+            apv = ArchivedPV(pvname, mode, since)
+            yield apv
+    return APVGen()
 
 
 def read_for_dates(pvname, ini, end):
