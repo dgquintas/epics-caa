@@ -6,4 +6,5 @@ DATASTORE = {'keyspace':            'caaTest',
 
 CONTROLLER = {'epics_connection_timeout':   0.5, #in seconds
               'num_workers':                8,
+              'num_timers':                 1,
 }

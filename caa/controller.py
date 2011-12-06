@@ -3,9 +3,15 @@ from __future__ import print_function
 import json
 import logging
 import uuid
+import time 
 import collections
 from multiprocessing import cpu_count, Process, current_process, JoinableQueue, Queue
+import threading
 from zlib import adler32
+try: 
+    import queue
+except:
+    import Queue as queue
 
 from caa import ArchivedPV, SubscriptionMode
 import datastore
@@ -27,9 +33,109 @@ class Task(object):
     def __call__(self, state):
         return self.f(state, *self.args)
 
-    def __str__(self):
+    def __repr__(self):
         return 'Task<%s(%r)>. Done: %s' % (self.name, self.args, self.done)
 
+
+#######################################################
+
+class TimerThread(threading.Thread):
+
+    STOP_SENTINEL = '__STOP'
+
+    def __init__(self, inq, name):
+        threading.Thread.__init__(self, name=name)
+        self._inq = inq
+        self.tasks = []
+
+    def run(self):
+        while True:
+            t = time.time()
+            try:
+                item = self._inq.get(block=True, timeout=0.1)
+                logger.debug("Gotten item %s", item)
+                if item == self.STOP_SENTINEL:
+                    break
+                else:
+                    reqid, task, period = item
+                    logger.debug("Adding task '%s' with id '%s' and period '%f'", 
+                            task, reqid, period)
+                    self.tasks.append([t,task, period])
+
+            except queue.Empty: 
+                pass
+
+            # traverse task list checking for ripe ones
+            for i, (enq_t, task, period) in enumerate(self.tasks):
+                if t - enq_t >= period:
+                    # submit it to the wokers
+                    workers.request(task)
+                    # update enqueue time 
+                    self.tasks[i][0] = t
+
+        logger.info("Timer %s exiting: ", threading.current_thread().name)
+
+##############################################
+
+
+class TimersPool(object):
+
+    def __init__(self, num_timers=2):
+        names = ['Timer-%d' % i for i in range(num_timers)]
+        self._inq = dict( (name, queue.Queue()) for name in names )
+
+        self._timers = []
+        for name in names:
+            q = self._inq[name]
+            self._timers.append( TimerThread(q, name) )
+
+        self._running = False
+
+    @property
+    def running(self):
+        return self._running
+
+    @property
+    def num_timers(self):
+        return len(self._timers)
+
+    def _submit(self, task, period):
+        if not self._running:
+            self.start()
+            self._running = True
+
+        reqid = uuid.uuid4()
+        # calculate the hash for the task based on its name
+        h = adler32(task.name) % self.num_timers
+        chosen_timer = self._timers[h]
+        logger.info("Enqueuing task '%s' in '%s'\'s queue", task.name, chosen_timer.name)
+        self._inq[chosen_timer.name].put((reqid, task, period))
+
+        return reqid
+
+    def request(self, task, period):
+        logger.debug("Submitting periodic request '%s' with period %f", task, period)
+        # submit subscription request to queue
+        return self._submit(task, period)
+
+    def start(self):
+        if self._running: 
+            logger.warn("Timers already running.")
+        else:
+            for t in self._timers:
+                t.daemon = True
+                logger.info("Starting timer %s", t.name)
+                t.start()
+
+    def stop(self):
+        if not self._running:
+            logger.warn("Timers weren't running.")
+        else:
+            logger.info("Stopping timers...")
+            [ q.put(TimerThread.STOP_SENTINEL) for q in self._inq.itervalues() ]
+            self._running = False
+
+#################################
 
 class WorkersPool(object):
 
@@ -41,6 +147,9 @@ class WorkersPool(object):
         self._task_queues = dict( (w.name, JoinableQueue()) for w in self._workers  )
         self._running = False
         
+    @property
+    def running(self):
+        return self._running
 
     @property
     def num_workers(self):
@@ -59,25 +168,10 @@ class WorkersPool(object):
 
         return reqid
 
-        
-    def request_subscription(self, pvname):
-        """ Adds a :class:`Task` to the pool. 
-
-            Returns a unique id that can be used to identify the subscription request 
-            upon completion.
-
-            :param Task: a :class:`Task` instance 
-
-        """
-        task = Task(pvname , epics_subscribe, pvname)
-        logger.info("Submitting subscription request '%s'", task)
+    def request(self, task):
+        logger.debug("Submitting request '%s'", task)
         # submit subscription request to queue
         return self._submit(task)
-
-    def request_unsubscription(self, unsub_task):
-        logger.info("Submitting unsubscription request '%s'", unsub_task)
-        return self._submit(unsub_task)
-
 
     def worker(self):
         wname = current_process().name
@@ -98,8 +192,7 @@ class WorkersPool(object):
 
             if not state[task.name]:
                 del state[task.name]
-        logger.info("Worker %s exiting: ", current_process())
-
+        logger.info("Worker %s exiting: ", current_process().name)
 
 
     def get_result(self, block=True, timeout=None):
@@ -126,7 +219,7 @@ class WorkersPool(object):
         else:
             for w in self._workers:
                 w.daemon = True
-                logger.info("Starting worker %s", w)
+                logger.info("Starting worker %s", w.name)
                 w.start()
 
     def stop(self):
@@ -140,7 +233,10 @@ class WorkersPool(object):
 
 ##############################################
 
+
 workers = WorkersPool(config.CONTROLLER['num_workers'])
+timers = TimersPool(config.CONTROLLER['num_timers'])
+
 def subscribe(pvname, mode):
     """ Requests subscription to ``pvname`` with mode ``mode``.
         
@@ -150,7 +246,15 @@ def subscribe(pvname, mode):
 
     """
     datastore.save_pv(pvname, mode)
-    return workers.request_subscription(pvname)
+
+    task = Task(pvname, epics_subscribe, pvname, mode)
+    if mode.name == SubscriptionMode.Scan.name:
+        # in addition, add it to the timer so that it gets scanned
+        # periodically
+        periodic_task = Task(pvname, epics_periodic, pvname, mode.period)
+        timers.request(periodic_task, mode.period)
+
+    return workers.request(task)
 
 def unsubscribe(pvname):
     """ Stops archiving the PV. 
@@ -160,8 +264,8 @@ def unsubscribe(pvname):
     apv = get_info(pvname)
     if apv:
         datastore.remove_pv(apv.name)
-        request = Task(apv.name , epics_unsubscribe, apv.name)
-        return workers.request_unsubscription(request)
+        task = Task(apv.name , epics_unsubscribe, apv.name)
+        return workers.request(task)
     else:
         logger.warn("Requesting unsubscription to unknown PV '%s'", pvname)
         return False
@@ -218,23 +322,30 @@ def save_config(fileobj):
         fileobj.write(json.dumps(apv, cls=ArchivedPV.JSONEncoder) + '\n', )
 
 def shutdown():
-    workers.stop()
+    if workers.running:
+        workers.stop()
+    if timers.running:
+        timers.stop()
 
 
 ##################### TASKS #######################
-def epics_subscribe(state, pvname):
+def epics_subscribe(state, pvname, mode):
     """ Function to be run by the worker in order to subscribe """
     logger.info("%s: EPICS-subscribing to %s", current_process(), pvname)
     conn_timeout = config.CONTROLLER['epics_connection_timeout']
 
-    # DBE_VALUE--when the channel's value changes by more than MDEL.
-    # DBE_LOG--when the channel's value changes by more than ADEL.
-    # DBE_ALARM--when the channel's alarm state changes.
-    sub_mask = epics.dbr.DBE_ALARM | epics.dbr.DBE_LOG | epics.dbr.DBE_VALUE
+    sub_mask = None
+    cb = None
+    if mode.name == SubscriptionMode.Monitor.name:
+        cb = subscription_cb
+        # DBE_VALUE--when the channel's value changes by more than MDEL.
+        # DBE_LOG--when the channel's value changes by more than ADEL.
+        # DBE_ALARM--when the channel's alarm state changes.
+        sub_mask = epics.dbr.DBE_ALARM | epics.dbr.DBE_LOG | epics.dbr.DBE_VALUE
 
     pv = epics.PV(pvname, 
-            callback=subscription_cb, 
-            connection_callback=connection_cb,             
+            callback=cb, 
+            connection_callback=connection_cb,
             connection_timeout=conn_timeout,
             auto_monitor=sub_mask
             )
@@ -254,6 +365,18 @@ def epics_unsubscribe(state, pvname):
     datastore.remove_pv(pvname)
     return True
 
+def epics_periodic(state, pvname, period):
+    """ Invoked every time a period for a scanned PV is due """
+    logger.debug("Periodic scan for PV '%s' with period %f secs", pvname, period)
+    
+    # get the pv's value
+    pv = state['pv']
+    value = pv.get()
+    _type = pv.type
+
+    #generate the id for the update
+    update_id = uuid.uuid1()
+    datastore.save_update(update_id, pvname, value, _type) #TODO: add more stuff
 
 
 ##################### CALLBACKS #######################

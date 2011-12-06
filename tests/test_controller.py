@@ -9,7 +9,7 @@ import pycassa.system_manager as SM
 
 from caa import controller, datastore, SubscriptionMode, ArchivedPV, config
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG, format='[%(processName)s/%(threadName)s] %(asctime)s %(levelname)s: %(message)s')
 logger = logging.getLogger('TestController')
 
 NUM_RANDOM_PVS = 10
@@ -125,20 +125,38 @@ class TestController(unittest.TestCase):
         for completed_req in done_receipts.itervalues():
             self.assertTrue(completed_req.result)
 
-        #TODO: test for scanned pvs
-   
+    def test_subscribe_scan(self):
+        controller.subscribe(self.pvs[0], SubscriptionMode.Scan(period=1))
+        time.sleep(5)
+
+        # TODO
+
 
     def test_unsubscribe(self):
         controller.subscribe(self.long_pvs[0], SubscriptionMode.Monitor())
+
+        #check that the system has registered the subscription
         apv = controller.get_info(self.long_pvs[0])
         self.assertEqual( apv.name, self.long_pvs[0] )
+
+        # wait for a while so that we gather some data 
         time.sleep(2)
-        before = controller.get_values(self.long_pvs[0])
+
+
+        # request unsubscription
         self.assertTrue(controller.unsubscribe(self.long_pvs[0]))
+        # take note of the data present
+        before = controller.get_values(self.long_pvs[0])
+
+        # verify that the system has removed the pv
         info = controller.get_info(self.long_pvs[0])
         self.assertEqual(None, info)
+
+        # wait to see if we are still receiving data 
         time.sleep(2)
         after = controller.get_values(self.long_pvs[0])
+
+        # we shouldn't have received any data during the last sleep period
         self.assertEqual(len(before), len(after))
 
         # unsubscribing to an unknown pv
@@ -221,7 +239,7 @@ class TestController(unittest.TestCase):
     def tearDown(self):
         controller.shutdown()
         time.sleep(1)
-        #datastore.reset_schema(config.DATASTORE['servers'][0], config.DATASTORE['keyspace'])
+        datastore.reset_schema(config.DATASTORE['servers'][0], config.DATASTORE['keyspace'])
 
     @classmethod
     def tearDownClass(cls):

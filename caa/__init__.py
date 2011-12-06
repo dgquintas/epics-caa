@@ -27,6 +27,9 @@ class SubscriptionMode(object):
 
     def as_dict(self):
         raise NotImplemented("Subclasses must implement 'as_dict' method")
+ 
+    def __repr__(self):
+        return self.__str__()
 
 class _Monitor(SubscriptionMode):
     __slots__ = ('delta',)
@@ -40,6 +43,7 @@ class _Monitor(SubscriptionMode):
 
     def __str__(self):
         return 'Monitor(delta=%s)' % self.delta
+
 
 class _Scan(SubscriptionMode):
     __slots__ = ('period',)
