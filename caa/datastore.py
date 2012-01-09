@@ -17,6 +17,9 @@ import logging
 import time
 import itertools
 import json
+import sys
+import multiprocessing
+from collections import defaultdict
 
 from caa import SubscriptionMode, ArchivedPV
 import caa.config as config
@@ -25,16 +28,18 @@ logger = logging.getLogger('DataStore')
 
 def _pool_factory():
     cfg = config.DATASTORE
-    pool = pycassa.pool.ConnectionPool(cfg['keyspace'], cfg['servers'])
-    return lambda: pool
+    pool = pycassa.pool.ConnectionPool(cfg['keyspace'], cfg['servers'] )
+    logger.debug("Created connection pool with id '%d' for process '%s'", \
+            id(pool), multiprocessing.current_process().name)
+    return pool
 
+G_POOLS = defaultdict(_pool_factory)
 def _cf(cfname):
-    import sys
+    global G_POOLS
     mod = sys.modules[__name__]
     priv_name = ('_' + cfname.upper())
-    pool = _pool_factory()()
     if priv_name not in mod.__dict__:
-        mod.__dict__[priv_name] = pycassa.ColumnFamily(pool, cfname)
+        mod.__dict__[priv_name] = pycassa.ColumnFamily(G_POOLS[multiprocessing.current_process().name], cfname)
     return mod.__dict__[priv_name]
 
 class DataStoreError(Exception):
@@ -53,8 +58,8 @@ def create_schema(server, keyspace, replication_factor=1, recreate=False):
 
     if keyspace not in sm.list_keyspaces():
         #create it
-        sm.create_keyspace(keyspace, pycassa.system_manager.SIMPLE_STRATEGY,
-                {'replication_factor': '1'})
+        sm.create_keyspace(keyspace, 
+                pycassa.system_manager.SIMPLE_STRATEGY, {'replication_factor': '1'})
         logger.debug("Keyspace %s created", keyspace)
 
 
@@ -76,11 +81,43 @@ def create_schema(server, keyspace, replication_factor=1, recreate=False):
         # PVs by their subscription mode
         sm.create_index(keyspace, 'pvs', 'mode', pycassa.UTF8_TYPE, index_name='mode_index')
 
+        #########################
+        ########### UPDATES
+        #########################
+        # update_timeline: {
+        #   pvname: {
+        #      ts: update_id
+        #   }
+        # }
         sm.create_column_family(keyspace, 'update_timeline', 
                 comparator_type=pycassa.LONG_TYPE, 
                 default_validation_class=pycassa.TIME_UUID_TYPE,
                 key_validation_class=pycassa.UTF8_TYPE)
 
+        # updates: {
+        #   'update_id':{ 
+        #      'pv': pvname,
+        #      'value': value, 
+        #      ...
+        #   }
+        # }
+        sm.create_column_family(keyspace, 'updates', 
+                comparator_type=pycassa.UTF8_TYPE, 
+                default_validation_class=pycassa.UTF8_TYPE, 
+                key_validation_class=pycassa.TIME_UUID_TYPE)
+
+
+        #########################
+        ########### STATUS
+        #########################
+        # status_timeline: {
+        #   pvname : {
+        #     ts: {
+        #       'pv': pvname,
+        #       'connected': bool
+        #       }
+        #   }
+        # }
         sm.create_column_family(keyspace, 'status_timeline', 
                 super=True,
                 comparator_type=pycassa.LONG_TYPE,  #timestamp
@@ -88,10 +125,6 @@ def create_schema(server, keyspace, replication_factor=1, recreate=False):
                 key_validation_class=pycassa.UTF8_TYPE)
         sm.alter_column(keyspace, 'status_timeline', 'connected', pycassa.BOOLEAN_TYPE)
 
-        sm.create_column_family(keyspace, 'updates', 
-                comparator_type=pycassa.UTF8_TYPE, 
-                default_validation_class=pycassa.UTF8_TYPE, 
-                key_validation_class=pycassa.TIME_UUID_TYPE)
      
 def reset_schema(server, keyspace, drop=False):
     """ Wipes the whole store clean.
@@ -108,30 +141,18 @@ def reset_schema(server, keyspace, drop=False):
 
 ############### WRITERS ###########################
 
-def save_update(update_id, pvname, value, value_type):
-    d = {'pv': pvname, 
-         'value': str(value),
-         'value_type': value_type,
-        }
-
+def save_update(update_id, pvname, value, **extra):
+    d = dict( (k, json.dumps(v)) for k,v in extra.iteritems() )
+    d.update( {'pv': json.dumps(pvname), 
+               'value': json.dumps(value),
+               }
+            )
     logger.debug("Saving update '(%s, %s)'", \
             update_id, d)
 
     ts = int(time.time() * 1e6) 
-    # updates: {
-    #   'update_id':{ 
-    #      'pv': pvname,
-    #      'value': value, 
-    #      ...
-    #   }
-    # }
     _cf('updates').insert(update_id, d)
 
-    # update_timeline: {
-    #   pvname: {
-    #      ts: update_id
-    #   }
-    # }
     _cf('update_timeline').insert(pvname, {ts: update_id})
 
 def save_status(status_id, pvname, connected):
@@ -141,14 +162,6 @@ def save_status(status_id, pvname, connected):
     logger.debug("Saving status '(%s, %s)' for %d seconds", \
             pvname, connected, ttl)
 
-    # status_timeline: {
-    #   pvname : {
-    #     ts: {
-    #       'pv': pvname,
-    #       'connected': bool
-    #       }
-    #   }
-    # }
     _cf('status_timeline').insert(pvname, {ts: d}, ttl = ttl)
 
 def save_pv(pvname, mode):
@@ -159,13 +172,6 @@ def save_pv(pvname, mode):
         :param mode: An instance of one of the inner classes of 
         :class:`SubscriptionMode` 
     """
-    #   pvname: {
-    #       'mode': mode name
-    #       '<mode_arg_1>': serialized value 
-    #       '<mode_arg_2>': serialized value
-    #       etc
-    #       'since': timestamp (long)
-    #   }
     ts = int(time.time() * 1e6) 
     d = {'since': ts} 
 
@@ -227,17 +233,31 @@ def list_pvs(modes=SubscriptionMode.available_modes):
     return APVGen()
 
 
-def read_for_dates(pvname, ini, end):
-    pass
+def read_values(pvname, limit, ini, end):
+    """ Returns a list of at most `limit` elements (dicts) for `pvname` from
+        `ini` until `end`.
 
-def read_latest_values(pvname, limit):
-    """ Returns a list of at most ``limit`` elements containing the 
-        latest values for ``pvname``
+        :param pvname: the PV
+        :param limit: number of entries to return
+        :param ini: `datetime` instance. First returned item will be as or more recent than it.
+        :param end: `datetime` instance. Last returned item will not be more recent than it.
     """
+    # turn datetime's into timestamps (secs from epoch). 
+    # And then into ms, as that's how the timestamps are represented
+    # in the cf
+    ts_ini = ini and time.mktime(ini.timetuple()) * 1e6 or ''
+    ts_end = end and time.mktime(end.timetuple()) * 1e6 or ''
+
     try:
-        timeline = _cf('update_timeline').get(pvname, column_count=limit)
+        timeline = _cf('update_timeline').get(pvname, \
+                column_count=limit, \
+                column_start=ts_ini, column_finish=ts_end)
     except pycassa.NotFoundException:
         return []
+    res = _join_timeline_with_updates(timeline)
+    return res
+
+def _join_timeline_with_updates(timeline):
     # timeline is a dict of the form (timestamp, update_id)...
     # join with UPDATES based on update_id
 
@@ -245,9 +265,14 @@ def read_latest_values(pvname, limit):
     update_ids = timeline.values()
     # now retrieve those with a multiget
     updates = _cf('updates').multiget(update_ids) # updates is a dict { up_id: { pv: ..., value: ...} }
-
-    res = [ pv_data for pv_data in updates.itervalues() ]
+    res = []
+    for pv_data in updates.itervalues():
+        for k in pv_data.keys():
+            pv_data[k] = json.loads(pv_data[k])
+        res.append(pv_data)
     return res
+
+
 
 def read_latest_status(pvnames):
     tl = _cf('status_timeline').multiget(pvnames, column_count=1, column_reversed=True)
