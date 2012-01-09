@@ -5,7 +5,7 @@ import logging
 import uuid
 import time 
 import collections
-from multiprocessing import cpu_count, Process, current_process, JoinableQueue, Queue
+from multiprocessing import cpu_count, Process, current_process
 import threading
 from zlib import adler32
 try: 
@@ -175,9 +175,9 @@ class WorkersPool(object):
     STOP_SENTINEL = '__STOP'
 
     def __init__(self, num_workers=cpu_count()):
-        self._done_queue = Queue()
+        self._done_queue = multiprocessing.Queue()
         self._workers = [ Process(target=self._worker, name=("Worker-%d"%i)) for i in range(num_workers) ]
-        self._task_queues = dict( (w.name, JoinableQueue()) for w in self._workers  )
+        self._task_queues = dict( (w.name, multiprocessing.JoinableQueue()) for w in self._workers  )
         self._running = False
         
     @property
