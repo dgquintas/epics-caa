@@ -1,15 +1,15 @@
 import unittest
 import logging
 import time
+import datetime
 from pprint import pprint
 from collections import defaultdict
 
-import pycassa
-import pycassa.system_manager as SM
+from caa import controller, datastore, SubscriptionMode, ArchivedPV
 
-from caa import controller, datastore, SubscriptionMode, ArchivedPV, config
+import test_config as config
 
-logging.basicConfig(level=logging.DEBUG, format='[%(processName)s/%(threadName)s] %(asctime)s %(levelname)s: %(message)s')
+logging.basicConfig(level=logging.INFO, format='[%(processName)s/%(threadName)s] %(asctime)s %(levelname)s: %(message)s')
 logger = logging.getLogger('TestController')
 
 NUM_RANDOM_PVS = 10
@@ -67,46 +67,128 @@ class TestController(unittest.TestCase):
         self.test_subscribe()
 
         # give it time to gather some data
-        wait_for = 5
+        wait_for = 10
         ioc_freq = 10 # Hz
         time.sleep(wait_for) # ioc generates values at 1 Hz
-        min_expected_num_values = wait_for * ioc_freq
+        expected_num_values = wait_for * ioc_freq
 
         no_values = controller.get_values('test:doesntexist')
         self.assertEqual(no_values, [])
 
         for longpv in self.long_pvs:
-            values = controller.get_values(longpv)
+            values = controller.get_values(longpv, limit=expected_num_values)
             logger.info("Received %d values after %d seconds at %d Hz", len(values), wait_for, ioc_freq)
-            self.assertGreaterEqual(len(values), min_expected_num_values)
+            self.assertEqual(len(values), expected_num_values)
             # we don't really know how for from a change the PV is. We 
-            # can only guarantee that we'll get min_expected_num_values 
+            # can only guarantee that we'll get expected_num_values 
             # updates during our sleep period
             first_value = int(values[0]['value'])
             for (i,value) in enumerate(values):
                 self.assertEqual(longpv, value['pv'])
-                self.assertEqual('long', value['value_type'])
+                self.assertEqual('long', value['type'])
                 self.assertEqual(first_value+i, int(value['value']))
 
         for doublepv in self.double_pvs:
-            values = controller.get_values(doublepv)
+            values = controller.get_values(doublepv, limit=expected_num_values)
             logger.info("Received %d values after %d seconds at %d Hz", len(values), wait_for, ioc_freq)
-            self.assertGreaterEqual(len(values), min_expected_num_values)
-            # we don't really know how for from a change the PV is. We 
-            # can only guarantee that we'll get min_expected_num_values 
-            # updates during our sleep period
+            self.assertEqual(len(values), expected_num_values)
             first_value = float(values[0]['value'])
             for (i,value) in enumerate(values):
                 self.assertEqual(doublepv, value['pv'])
-                self.assertEqual('double', value['value_type'])
+                self.assertEqual('double', value['type'])
                 self.assertEqual(first_value+i, float(value['value']))
 
         for fakepv in self.fake_pvs:
             values = controller.get_values(fakepv)
             self.assertEqual([], values)
 
-    def test_subscribe(self):
-        receipts = [ controller.subscribe(pv, SubscriptionMode.Monitor()) for pv in self.pvs ]
+
+    def test_get_values_by_date(self):
+        self.test_subscribe()
+
+        wait_for = 5
+        start = datetime.datetime.now()
+        halftime = start + datetime.timedelta(seconds=wait_for/2.0)
+ 
+        time.sleep(wait_for) 
+
+        # test "up to" semantics, open interval on the left
+        for pvset in (self.long_pvs, self.double_pvs):
+            for pv in pvset:
+                all_values = controller.get_values(pv)
+                upto_values = controller.get_values(pv, to_date=halftime) # first half
+                from_values = controller.get_values(pv, from_date=halftime) # second half
+                ts = time.mktime( halftime.timetuple())
+                for v in upto_values:
+                    self.assertLessEqual(v['timestamp'], ts)
+                for v in from_values:
+                    self.assertGreaterEqual(v['timestamp'], ts)
+
+                # it's >= because there may be some overlap, due to the loss of precision in the
+                # timestamp we use in the get_values call
+                self.assertGreaterEqual( len(upto_values)+len(from_values), len(all_values) )
+
+    def test_get_values_throttled(self):
+        # give it time to gather some data
+        wait_for = 5
+        ioc_freq = 10 # Hz
+        max_archiving_freq = 5 # Hz
+
+        mode = SubscriptionMode.Monitor(max_freq=max_archiving_freq)
+        self.test_subscribe(mode)
+
+        time.sleep(wait_for) 
+
+        no_values = controller.get_values('test:doesntexist')
+        self.assertEqual(no_values, [])
+
+        for pvset in (self.long_pvs, self.double_pvs):
+            for pv in pvset:
+                values = controller.get_values(pv)
+                logger.info("Received %d values for '%s' after %d seconds at %d Hz", \
+                        len(values), pv, wait_for, max_archiving_freq)
+
+                # diferences in timestamp shouldn't exceed 1/max_archiving_freq (period) 
+                max_period = 1/max_archiving_freq
+                for i in range(len(values)-1):
+                    ith = values[i]['timestamp']
+                    ip1th = values[i+1]['timestamp'] 
+                    self.assertGreaterEqual( ip1th-ith, max_period) 
+
+        for fakepv in self.fake_pvs:
+            values = controller.get_values(fakepv)
+            self.assertEqual([], values)
+
+    def test_get_values_delta(self):
+        # give it time to gather some data
+        wait_for = 5
+        ioc_freq = 10 # Hz
+        delta = 2
+
+        mode = SubscriptionMode.Monitor(delta=delta)
+        self.test_subscribe(mode)
+
+        time.sleep(wait_for) 
+
+        no_values = controller.get_values('test:doesntexist')
+        self.assertEqual(no_values, [])
+
+        for pvset in (self.long_pvs, self.double_pvs):
+            for pv in pvset:
+                values = controller.get_values(pv)
+                logger.info("Received %d values for '%s' after %d seconds", \
+                        len(values), pv, wait_for)
+                for i in range(len(values)-1):
+                    ith = values[i]['value']
+                    ip1th = values[i+1]['value'] 
+                    self.assertGreaterEqual( ip1th-ith, delta) 
+
+        for fakepv in self.fake_pvs:
+            values = controller.get_values(fakepv)
+            self.assertEqual([], values)
+
+    def test_subscribe(self, mode=SubscriptionMode.Monitor()):
+        receipts = [ controller.subscribe(pv, mode) for pv in self.pvs ]
 
         done_receipts = dict(controller.get_result(timeout=self.timeout) \
                 for _ in self.pvs )
@@ -126,11 +208,19 @@ class TestController(unittest.TestCase):
             self.assertTrue(completed_req.result)
 
     def test_subscribe_scan(self):
-        controller.subscribe(self.pvs[0], SubscriptionMode.Scan(period=1))
-        time.sleep(5)
+        for pv in self.pvs[:4]:
+            self.assertEqual(len(controller.get_values(pv)), 0)
 
-        # TODO
+        periods = (1,1.5, 2, 2.1)
+        for pv,p in zip(self.pvs[:4], periods):
+            controller.subscribe(pv, SubscriptionMode.Scan(period=p))
 
+        sleep_for = 10
+        time.sleep(sleep_for)
+        
+        for pv,p in zip(self.pvs[:4], periods):
+            res = controller.get_values(pv)
+            self.assertAlmostEqual(sleep_for/p, len(res), delta=1)
 
     def test_unsubscribe(self):
         controller.subscribe(self.long_pvs[0], SubscriptionMode.Monitor())
