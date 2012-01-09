@@ -5,6 +5,7 @@ import logging
 import uuid
 import time 
 import collections
+import multiprocessing
 from multiprocessing import cpu_count, Process, current_process
 import threading
 from zlib import adler32
