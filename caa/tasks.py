@@ -50,7 +50,7 @@ class TimerThread(threading.Thread):
 
     STOP_SENTINEL = '__STOP'
 
-    def __init__(self, inq, name):
+    def __init__(self, inq, name, workers):
         """ :param inq: synchronized LIFO queue where :class:`Task` instances are
                         submitted in order to add them to the timer.
             :param name: a textual name for the timer thread.
@@ -58,6 +58,8 @@ class TimerThread(threading.Thread):
         threading.Thread.__init__(self, name=name)
         self._inq = inq
         self.tasks = []
+        self.state = collections.defaultdict(dict)
+        self.workers = workers
 
     def run(self):
         while True:
@@ -79,12 +81,13 @@ class TimerThread(threading.Thread):
             # traverse task list checking for ripe ones
             for i, (enq_t, task, period) in enumerate(self.tasks):
                 if t - enq_t >= period:
-                    # submit it to the wokers
-                    workers.request(task)
+                    # run the task to be invoked when period is over
+                    self.workers.request(task)
+
                     # update enqueue time 
                     self.tasks[i][0] = t
 
-        logger.info("Timer %s exiting: ", threading.current_thread().name)
+        logger.info("Timer %s exiting.", threading.current_thread().name)
 
 ##############################################
 
@@ -92,14 +95,15 @@ class TimerThread(threading.Thread):
 class TimersPool(object):
     """ Pool of :class:`TimerThread`s """
 
-    def __init__(self, num_timers=2):
-        names = ['Timer-%d' % i for i in range(num_timers)]
-        self._inq = dict( (name, queue.Queue()) for name in names )
-
+    def __init__(self, workers, num_timers=2):
+        self._task_queues = []
         self._timers = []
-        for name in names:
-            q = self._inq[name]
-            self._timers.append( TimerThread(q, name) )
+        for i in range(num_timers):
+            tq = queue.Queue()
+            timer = TimerThread(tq, 'Timer-%d' % i, workers)
+            
+            self._task_queues.append(tq)
+            self._timers.append(timer)
 
         self._running = False
 
@@ -119,11 +123,15 @@ class TimersPool(object):
         reqid = uuid.uuid4()
         # calculate the hash for the task based on its name
         h = adler32(task.name) % self.num_timers
-        chosen_timer = self._timers[h]
-        logger.info("Enqueuing task '%s' in '%s'\'s queue", task.name, chosen_timer.name)
-        self._inq[chosen_timer.name].put((reqid, task, period))
+        chosen_q = self._task_queues[h]
+        chosen_q.put((reqid, task, period))
 
         return reqid
+
+    def subscribe(self, task):
+        logger.debug("Submitting subscription request to '%s'", task.name)
+        # submit subscription request to queue
+        return self._submit(task)
 
     def request(self, task, period):
         """ Add `task` to one of the pool's timers. 
@@ -153,24 +161,68 @@ class TimersPool(object):
             logger.warn("Timers weren't running.")
         else:
             logger.info("Stopping timers...")
-            [ q.put(TimerThread.STOP_SENTINEL) for q in self._inq.itervalues() ]
+            [ q.put(TimerThread.STOP_SENTINEL) for q in self._task_queues ]
+            self.join()
             self._running = False
+
+    def join(self):
+        """ Blocks until all pending requests have finished """
+        logger.debug("%s blocking until all pending requests finish.", self)
+        [ t.join() for t in self._timers ]
+
 
 #################################
 
+class Worker(Process):
+
+    STOP_SENTINEL = '__STOP'
+
+    def __init__(self, inq, outq, name):
+        Process.__init__(self, name=name)
+        self._inq = inq
+        self._outq = outq
+
+        self.state = collections.defaultdict(dict)
+
+    def run(self):
+        logger.debug("At worker's run() method")
+        for reqid, task in iter(self._inq.get, self.STOP_SENTINEL):
+            logger.debug("Processing task '%s' with id '%s'", task, reqid)
+            
+            t_res = task(self.state[task.name])  
+
+            task.result = t_res
+            logger.debug("Task with id '%s' for PV '%s' completed. Result: '%r'", \
+                    reqid, task.name, task.result )
+
+            self._outq.put((reqid, task))
+
+            if not self.state[task.name]:
+                del self.state[task.name]
+
+        logger.info("Worker exiting.")
+
+
 class WorkersPool(object):
-    """ Pool of :class:`Process`es.
+    """ Pool of :class:`Worker`s.
     
         They manage PV's callbacks as well as ``get`` requests from the 
         scanned PVs.
     """
 
-    STOP_SENTINEL = '__STOP'
 
     def __init__(self, num_workers=cpu_count()):
         self._done_queue = multiprocessing.Queue()
-        self._workers = [ Process(target=self._worker, name=("Worker-%d"%i)) for i in range(num_workers) ]
-        self._task_queues = dict( (w.name, multiprocessing.JoinableQueue()) for w in self._workers  )
+        self._task_queues = []
+        self._workers = []
+        for i in range(num_workers):
+            tq = multiprocessing.Queue()
+            w = Worker(tq, self._done_queue, "Worker-%d" % i)
+
+            self._task_queues.append(tq)
+            self._workers.append(w)
+
+        self._req_lock = threading.Lock()
         self._running = False
         
     @property
@@ -189,37 +241,21 @@ class WorkersPool(object):
         reqid = uuid.uuid4()
         # calculate the hash for the task based on its name
         h = adler32(task.name) % self.num_workers
-        chosen_worker = self._workers[h]
-        self._task_queues[chosen_worker.name].put((reqid, task))
+        chosen_q = self._task_queues[h]
+        chosen_q.put((reqid, task))
 
         return reqid
 
     def request(self, task):
         """ Submit a :class:`Task` instance to be run by one of the processes """
+        self._req_lock.acquire()
+        logger.debug("Acquired request lock for task '%s'", task)
         logger.debug("Submitting request '%s'", task)
         # submit subscription request to queue
-        return self._submit(task)
-
-    def _worker(self):
-        wname = current_process().name
-        logger.debug("At worker function '%s'", wname)
-        state = collections.defaultdict(dict)
-        q = self._task_queues[wname]
-        for reqid, task in iter(q.get, self.STOP_SENTINEL):
-            logger.debug("Worker '%s' processing task '%s' with id '%s'", 
-                    wname, task, reqid)
-            
-            t_res = task(state[task.name])  
-
-            task.result = t_res
-            logger.debug("Task with id '%s' for PV '%s' completed. Result: '%r'", \
-                    reqid, task.name, task.result )
-            self._done_queue.put((reqid, task))
-            q.task_done()
-
-            if not state[task.name]:
-                del state[task.name]
-        logger.info("Worker %s exiting: ", current_process().name)
+        res = self._submit(task)
+        self._req_lock.release()
+        logger.debug("Released request lock for task '%s'", task)
+        return res
 
 
     def get_result(self, block=True, timeout=None):
@@ -236,8 +272,8 @@ class WorkersPool(object):
  
     def join(self):
         """ Blocks until all pending requests have finished """
-        logger.debug("Blocking until all pending requests finish.")
-        [ q.join for q in self._task_queues.itervalues() ]
+        logger.debug("%s blocking until all pending requests finish.", self)
+        [ w.join() for w in self._workers ]
 
 
     def start(self):
@@ -254,13 +290,12 @@ class WorkersPool(object):
             logger.warn("Workers weren't running.")
         else:
             logger.info("Stopping workers...")
-            [ q.put(self.STOP_SENTINEL) for q in self._task_queues.itervalues() ]
+            [ q.put(Worker.STOP_SENTINEL) for q in self._task_queues ]
+            self.join()
             self._running = False
 
 
 ##############################################
 
-workers = WorkersPool(config.CONTROLLER['num_workers'])
-timers = TimersPool(config.CONTROLLER['num_timers'])
 
 
