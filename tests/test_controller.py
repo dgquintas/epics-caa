@@ -5,9 +5,7 @@ import datetime
 from pprint import pprint
 from collections import defaultdict
 
-from caa import controller, datastore, SubscriptionMode, ArchivedPV
-
-import test_config as config
+from caa import controller, datastore, SubscriptionMode, ArchivedPV, config
 
 logging.basicConfig(level=logging.INFO, format='[%(processName)s/%(threadName)s] %(asctime)s %(levelname)s: %(message)s')
 logger = logging.getLogger('TestController')
@@ -41,27 +39,14 @@ class TestController(unittest.TestCase):
                     for _ in range(len(self.pvs)) ]
         self.assertEqual( len(results), len(self.pvs) )
 
-        status = controller.get_status(self.pvs)
-        for fakepv in self.fake_pvs:
-            self.assertIn(fakepv, status)
-            status_data = status[fakepv]
-            self.assertFalse(status_data['connected'])
         for pv in self.existing_pvs: 
-            self.assertIn(pv, status)
-            status_data = status[pv]
-            self.assertTrue(status_data['connected'])
+            status = controller.get_status(pv)
+            self.assertTrue(status)
+            self.assertTrue(status['connected'], "Failed for %s" % pv)
 
-        status = controller.get_status(['whatever'])
-        status_data = status['whatever']
-        self.assertEqual(status_data, {})
-
-
-        # wait for ttl seconds to verify that values are actually getting expired
-        ttl = config.DATASTORE['status_ttl']
-        time.sleep(ttl+1)
-        status = controller.get_status(self.pvs)
-        for pv, data in status.iteritems():
-            self.assertEqual(data, {})
+        for fakepv in self.fake_pvs:
+            status = controller.get_status(fakepv)
+            self.assertEqual(status, {})
 
     def test_get_values(self):
         self.test_subscribe()
@@ -84,7 +69,7 @@ class TestController(unittest.TestCase):
             # updates during our sleep period
             first_value = int(values[0]['value'])
             for (i,value) in enumerate(values):
-                self.assertEqual(longpv, value['pv'])
+                self.assertEqual(longpv, value['pvname'])
                 self.assertEqual('long', value['type'])
                 self.assertEqual(first_value+i, int(value['value']))
 
@@ -94,7 +79,7 @@ class TestController(unittest.TestCase):
             self.assertEqual(len(values), expected_num_values)
             first_value = float(values[0]['value'])
             for (i,value) in enumerate(values):
-                self.assertEqual(doublepv, value['pv'])
+                self.assertEqual(doublepv, value['pvname'])
                 self.assertEqual('double', value['type'])
                 self.assertEqual(first_value+i, float(value['value']))
 
@@ -327,6 +312,9 @@ class TestController(unittest.TestCase):
         filelike.close()
 
     def tearDown(self):
+        for pv in self.pvs:
+            controller.unsubscribe(pv)
+
         controller.shutdown()
         time.sleep(1)
         datastore.reset_schema(config.DATASTORE['servers'][0], config.DATASTORE['keyspace'])

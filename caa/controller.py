@@ -8,7 +8,7 @@ from caa import ArchivedPV, SubscriptionMode
 
 import datastore
 import caa.config as config
-from tasks import Task, TimersPool, WorkersPool, workers, timers
+from tasks import Task, TimersPool, WorkersPool
 
 import pycassa
 
@@ -16,6 +16,8 @@ logger = logging.getLogger('controller')
 
 #######################################################
 
+workers = WorkersPool(config.CONTROLLER['num_workers'])
+timers = TimersPool(workers, config.CONTROLLER['num_timers'])
 
 def subscribe(pvname, mode):
     """ Requests subscription to ``pvname`` with mode ``mode``.
@@ -25,16 +27,22 @@ def subscribe(pvname, mode):
         :param mode: Subclass of :class:`SubscriptionMode`.
 
     """
-    datastore.save_pv(pvname, mode)
+    pv = get_info(pvname)
+    if not pv:
+        datastore.save_pv(pvname, mode)
 
-    task = Task(pvname, epics_subscribe, pvname, mode)
-    if mode.name == SubscriptionMode.Scan.name:
-        # in addition, add it to the timer so that it gets scanned
-        # periodically
-        periodic_task = Task(pvname, epics_periodic, pvname, mode.period)
-        timers.request(periodic_task, mode.period)
+        task = Task(pvname, epics_subscribe, pvname, mode)
+        receipt = workers.request(task)
+        if mode.name == SubscriptionMode.Scan.name:
+            # in addition, add it to the timer so that it gets scanned
+            # periodically
+            periodic_task = Task(pvname, epics_periodic, pvname, mode.period)
+            timers.request(periodic_task, mode.period)
 
-    return workers.request(task)
+        return receipt
+    else:
+        logger.warn("Already subscribed to PV '%s'", pv.name)
+        
 
 def unsubscribe(pvname):
     """ Stops archiving the PV. 
@@ -65,21 +73,13 @@ def get_info(pvname):
     """
     return datastore.read_pv(pvname) 
 
-def get_status(pvnames):
-    """ Returns a dictionary keyed by the PV name containing their
-        status information. 
+def get_status(pvname):
+    """ Returns the status dictionary for the given PV.  """
+    return datastore.read_status(pvname)
 
-        The status information, if present, is represented by a dictionary keyed by
-        ``timestamp`` and ``connected``. If no information is present for
-        a given PV, an empty dictionary is returned.
-    """
-    return datastore.read_latest_status(pvnames)
-
-
-def get_values(pvname, limit=100, from_date=None, to_date=None):
+def get_values(pvname, fields=[], limit=100, from_date=None, to_date=None):
     """ Returns latest archived data for the PV as a list with at most ``limit`` elements """
-    return datastore.read_values(pvname, limit, from_date, to_date)
-
+    return datastore.read_values(pvname, fields, limit, from_date, to_date)
 
 def load_config(fileobj):
     """ Restore the state defined by the config.
@@ -99,13 +99,14 @@ def save_config(fileobj):
     # get a list of the ArchivedPV values 
     apvs = datastore.list_pvs()
     for apv in apvs:
-        fileobj.write(json.dumps(apv, cls=ArchivedPV.JSONEncoder) + '\n', )
+        fileobj.write(json.dumps(apv, indent=4,cls=ArchivedPV.JSONEncoder) + '\n', )
 
 def shutdown():
     if workers.running:
         workers.stop()
     if timers.running:
         timers.stop()
+    logger.info("Shutdown completed")
 
 
 ##################### TASKS #######################
@@ -162,8 +163,7 @@ def epics_periodic(state, pvname, period):
 ##################### CALLBACKS #######################
 def subscription_cb(**kw):
     """ Internally called when a new value arrives for a subscribed PV. """
-    logger.debug("PV callback invoked: %(pvname)s changed to value %(value)s at \
-            %(timestamp)s" % kw)
+    logger.debug("PV callback invoked: %(pvname)s changed to value %(value)s at %(timestamp)s" % kw)
 
     pv = kw['cb_info'][1]
     pvname = kw['pvname']
@@ -206,8 +206,7 @@ def subscription_cb(**kw):
 def connection_cb(pvname, conn, **kw):
     logger.debug("PV '%s' connected: %s", pvname, conn)
     
-    status_id = uuid.uuid1()
-    datastore.save_status(status_id, pvname, conn)
+    datastore.save_conn_status(pvname, conn)
 
 def _gather_pv_data(pv):
     to_consider = ('pvname', 'value', 'count', 'type', 'status', 'precision', 'units', 'severity', \

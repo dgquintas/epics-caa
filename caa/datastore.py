@@ -28,19 +28,31 @@ logger = logging.getLogger('DataStore')
 
 def _pool_factory():
     cfg = config.DATASTORE
-    pool = pycassa.pool.ConnectionPool(cfg['keyspace'], cfg['servers'] )
+    pool = pycassa.pool.ConnectionPool(cfg['keyspace'], cfg['servers'])
     logger.debug("Created connection pool with id '%d' for process '%s'", \
             id(pool), multiprocessing.current_process().name)
     return pool
 
+
+# holds a pycassa connection pool per process
 G_POOLS = defaultdict(_pool_factory)
-def _cf(cfname):
+
+# map of process -> column families (cfname -> cfinstance)
+G_CFS = defaultdict(dict)
+
+def _cf_factory(cfname):
     global G_POOLS
-    mod = sys.modules[__name__]
-    priv_name = ('_' + cfname.upper())
-    if priv_name not in mod.__dict__:
-        mod.__dict__[priv_name] = pycassa.ColumnFamily(G_POOLS[multiprocessing.current_process().name], cfname)
-    return mod.__dict__[priv_name]
+    procname = multiprocessing.current_process().name
+    cf = pycassa.ColumnFamily(G_POOLS[procname], cfname)
+    return cf
+
+def _cf(cfname):
+    global G_CFS
+    procname = multiprocessing.current_process().name
+    cfs_for_proc = G_CFS[procname]
+    if cfname not in cfs_for_proc:
+        cfs_for_proc[cfname] = _cf_factory(cfname)
+    return cfs_for_proc[cfname]
 
 class DataStoreError(Exception):
     pass
@@ -62,6 +74,16 @@ def create_schema(server, keyspace, replication_factor=1, recreate=False):
                 pycassa.system_manager.SIMPLE_STRATEGY, {'replication_factor': '1'})
         logger.debug("Keyspace %s created", keyspace)
 
+
+        # statuses: 
+        #   pvname: {
+        #       'connected': boolean
+        #   }
+        sm.create_column_family(keyspace, 'statuses', 
+                comparator_type=pycassa.UTF8_TYPE, 
+                default_validation_class=pycassa.UTF8_TYPE, 
+                key_validation_class=pycassa.UTF8_TYPE)
+        sm.alter_column(keyspace, 'statuses', 'connected', pycassa.BOOLEAN_TYPE)
 
         # pvs: {
         #   pvname: {
@@ -96,7 +118,7 @@ def create_schema(server, keyspace, replication_factor=1, recreate=False):
 
         # updates: {
         #   'update_id':{ 
-        #      'pv': pvname,
+        #      'pvname': pvname,
         #      'value': value, 
         #      ...
         #   }
@@ -107,23 +129,23 @@ def create_schema(server, keyspace, replication_factor=1, recreate=False):
                 key_validation_class=pycassa.TIME_UUID_TYPE)
 
 
-        #########################
-        ########### STATUS
-        #########################
-        # status_timeline: {
-        #   pvname : {
-        #     ts: {
-        #       'pv': pvname,
-        #       'connected': bool
-        #       }
-        #   }
-        # }
-        sm.create_column_family(keyspace, 'status_timeline', 
-                super=True,
-                comparator_type=pycassa.LONG_TYPE,  #timestamp
-                subcomparator_type=pycassa.UTF8_TYPE,
-                key_validation_class=pycassa.UTF8_TYPE)
-        sm.alter_column(keyspace, 'status_timeline', 'connected', pycassa.BOOLEAN_TYPE)
+#        #########################
+#        ########### STATUS
+#        #########################
+#        # status_timeline: {
+#        #   pvname : {
+#        #     ts: {
+#        #       'pvname': pvname,
+#        #       'connected': bool
+#        #       }
+#        #   }
+#        # }
+#        sm.create_column_family(keyspace, 'status_timeline', 
+#                super=True,
+#                comparator_type=pycassa.LONG_TYPE,  #timestamp
+#                subcomparator_type=pycassa.UTF8_TYPE,
+#                key_validation_class=pycassa.UTF8_TYPE)
+#        sm.alter_column(keyspace, 'status_timeline', 'connected', pycassa.BOOLEAN_TYPE)
 
      
 def reset_schema(server, keyspace, drop=False):
@@ -143,7 +165,7 @@ def reset_schema(server, keyspace, drop=False):
 
 def save_update(update_id, pvname, value, **extra):
     d = dict( (k, json.dumps(v)) for k,v in extra.iteritems() )
-    d.update( {'pv': json.dumps(pvname), 
+    d.update( {'pvname': json.dumps(pvname), 
                'value': json.dumps(value),
                }
             )
@@ -155,14 +177,11 @@ def save_update(update_id, pvname, value, **extra):
 
     _cf('update_timeline').insert(pvname, {ts: update_id})
 
-def save_status(status_id, pvname, connected):
-    d = {'pv': pvname, 'connected': connected}
-    ttl = config.DATASTORE['status_ttl']
-    ts = int(time.time() * 1e6)
-    logger.debug("Saving status '(%s, %s)' for %d seconds", \
-            pvname, connected, ttl)
 
-    _cf('status_timeline').insert(pvname, {ts: d}, ttl = ttl)
+def save_conn_status(pvname, connected):
+    d = {'connected': connected}
+    logger.debug("Updating connection status for '%s' to '%s'", pvname, connected)
+    _cf('statuses').insert(pvname, d)
 
 def save_pv(pvname, mode):
     """ 
@@ -199,7 +218,7 @@ def read_pv(pvname):
     try:
         cols = _cf('pvs').get(pvname)
         
-        since = cols.pop('since')
+        since =  cols.pop('since')
         
         # cols's remaining values (mode as a dict) are json'd 
         mode_dict = dict( (k, json.loads(v)) for k,v in cols.iteritems() )
@@ -210,6 +229,15 @@ def read_pv(pvname):
     except NotFoundException:
         return None
     return apv
+
+def read_status(pvname):
+    try:
+        res = _cf('statuses').get(pvname)
+    except pycassa.NotFoundException:
+        res = {}
+    finally:
+        return res
+
 def list_pvs(modes=SubscriptionMode.available_modes):
     """ Returns an iterator over the list of PV's matching the modes in 
         the ``modes`` list. 
@@ -233,11 +261,13 @@ def list_pvs(modes=SubscriptionMode.available_modes):
     return APVGen()
 
 
-def read_values(pvname, limit, ini, end):
+def read_values(pvname, fields, limit, ini, end):
     """ Returns a list of at most `limit` elements (dicts) for `pvname` from
         `ini` until `end`.
 
         :param pvname: the PV
+        :param fields: which PV fields to read (value, type, etc.). If empty, read all.
+
         :param limit: number of entries to return
         :param ini: `datetime` instance. First returned item will be as or more recent than it.
         :param end: `datetime` instance. Last returned item will not be more recent than it.
@@ -254,10 +284,10 @@ def read_values(pvname, limit, ini, end):
                 column_start=ts_ini, column_finish=ts_end)
     except pycassa.NotFoundException:
         return []
-    res = _join_timeline_with_updates(timeline)
+    res = _join_timeline_with_updates(timeline, fields)
     return res
 
-def _join_timeline_with_updates(timeline):
+def _join_timeline_with_updates(timeline, fields):
     # timeline is a dict of the form (timestamp, update_id)...
     # join with UPDATES based on update_id
 
@@ -267,27 +297,10 @@ def _join_timeline_with_updates(timeline):
     updates = _cf('updates').multiget(update_ids) # updates is a dict { up_id: { pv: ..., value: ...} }
     res = []
     for pv_data in updates.itervalues():
-        for k in pv_data.keys():
-            pv_data[k] = json.loads(pv_data[k])
-        res.append(pv_data)
-    return res
-
-
-
-def read_latest_status(pvnames):
-    tl = _cf('status_timeline').multiget(pvnames, column_count=1, column_reversed=True)
-    # tl is a dict of the form {pvname: {timestamp: {'pv': pvname, 'connected': bool}}}
-    # OR an empty dict if no values for a given pv
-    res = {}
-    for pvname in pvnames:
-        if pvname in tl:
-            info = tl[pvname]
-            for ts, data in info.iteritems():
-                connected = data['connected']
-                res[pvname] = {'timestamp': ts, 'connected': connected} 
-        else:
-            res[pvname] = {}
-
+        out_data = {}
+        for k in (fields or pv_data.keys()):
+            out_data[k] = json.loads(pv_data[k])
+        res.append(out_data)
     return res
 
 
