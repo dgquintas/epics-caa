@@ -47,9 +47,8 @@ class UnsubscriptionHandler(BaseHandler):
 class InfoHandler(BaseHandler):
     def get(self):
         pvname = self.get_argument('pvname')
-
-        info = controller.get_info(pvname)
-        self.win(info)
+        apv = controller.get_info(pvname)
+        self.win(apv)
 
 class StatusHandler(BaseHandler):
     def get(self): 
