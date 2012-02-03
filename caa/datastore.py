@@ -194,15 +194,12 @@ def save_pv(pvname, mode):
     ts = int(time.time() * 1e6) 
     d = {'since': ts} 
 
-    mode_dict = mode.as_dict()
-    # for each of the mode_dict's values, ensure it's 
+    # for each of the mode values, ensure it's 
     # in str form 
-    for k,v in mode_dict.iteritems():
-        mode_dict[k] = json.dumps(v)
-    d.update(mode_dict)
+    mode_jsoned = dict( (k, json.dumps(v)) for k,v in mode.iteritems() ) 
+    d.update(mode_jsoned)
 
-    logger.debug("Saving pv subscription '(%s, %s)'", \
-            pvname, d)
+    logger.debug("Saving pv subscription '(%s, %s)'", pvname, d)
 
     _cf('pvs').insert(pvname, d)
 
@@ -222,7 +219,6 @@ def read_pv(pvname):
         
         # cols's remaining values (mode as a dict) are json'd 
         mode_dict = dict( (k, json.loads(v)) for k,v in cols.iteritems() )
-        
         mode = SubscriptionMode.parse(mode_dict)
 
         apv = ArchivedPV(pvname, mode, since)

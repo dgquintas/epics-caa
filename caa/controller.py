@@ -81,6 +81,9 @@ def get_values(pvname, fields=[], limit=100, from_date=None, to_date=None):
     """ Returns latest archived data for the PV as a list with at most ``limit`` elements """
     return datastore.read_values(pvname, fields, limit, from_date, to_date)
 
+def get_pvs():
+    return datastore.list_pvs()
+
 def load_config(fileobj):
     """ Restore the state defined by the config.
     
@@ -99,7 +102,7 @@ def save_config(fileobj):
     # get a list of the ArchivedPV values 
     apvs = datastore.list_pvs()
     for apv in apvs:
-        fileobj.write(json.dumps(apv, indent=4,cls=ArchivedPV.JSONEncoder) + '\n', )
+        fileobj.write(json.dumps(apv, indent=4) + '\n', )
 
 def shutdown():
     if workers.running:
