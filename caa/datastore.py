@@ -128,25 +128,6 @@ def create_schema(server, keyspace, replication_factor=1, recreate=False):
                 default_validation_class=pycassa.UTF8_TYPE, 
                 key_validation_class=pycassa.TIME_UUID_TYPE)
 
-
-#        #########################
-#        ########### STATUS
-#        #########################
-#        # status_timeline: {
-#        #   pvname : {
-#        #     ts: {
-#        #       'pvname': pvname,
-#        #       'connected': bool
-#        #       }
-#        #   }
-#        # }
-#        sm.create_column_family(keyspace, 'status_timeline', 
-#                super=True,
-#                comparator_type=pycassa.LONG_TYPE,  #timestamp
-#                subcomparator_type=pycassa.UTF8_TYPE,
-#                key_validation_class=pycassa.UTF8_TYPE)
-#        sm.alter_column(keyspace, 'status_timeline', 'connected', pycassa.BOOLEAN_TYPE)
-
      
 def reset_schema(server, keyspace, drop=False):
     """ Wipes the whole store clean.
