@@ -40,7 +40,7 @@ class Task(object):
         return self.f(state, *self.args)
 
     def __repr__(self):
-        return 'Task<%s(%r)>. Done: %s' % (self.name, self.args, self.done)
+        return 'Task-%s<%s(%r)>. Done: %s' % (self.name, self.f.__name__, self.args, self.done)
 
 
 #######################################################
@@ -118,10 +118,8 @@ class TimersPool(object):
     def _submit(self, task, period):
         if not self._running:
             self.start()
-            self._running = True
 
         reqid = uuid.uuid4()
-        # calculate the hash for the task based on its name
         h = adler32(task.name) % self.num_timers
         chosen_q = self._task_queues[h]
         chosen_q.put((reqid, task, period))
@@ -150,6 +148,7 @@ class TimersPool(object):
         if self._running: 
             logger.warn("Timers already running.")
         else:
+            self._running = True
             for t in self._timers:
                 t.daemon = True
                 logger.info("Starting timer %s", t.name)
@@ -187,11 +186,12 @@ class Worker(Process):
     def run(self):
         logger.debug("At worker's run() method")
         for reqid, task in iter(self._inq.get, self.STOP_SENTINEL):
-            logger.debug("Processing task '%s' with id '%s'", task, reqid)
+            logger.debug("Processing task '%s' with id '%s'.Queue size: %d ", task, reqid, self._inq.qsize())
             
             t_res = task(self.state[task.name])  
 
             task.result = t_res
+            task.done = True
             logger.debug("Task with id '%s' for PV '%s' completed. Result: '%r'", \
                     reqid, task.name, task.result )
 
@@ -224,6 +224,7 @@ class WorkersPool(object):
 
         self._req_lock = threading.Lock()
         self._running = False
+        self._stopping = False
         
     @property
     def running(self):
@@ -234,15 +235,15 @@ class WorkersPool(object):
         return len(self._workers)
 
     def _submit(self, task):  
-        if not self._running:
-            self.start()
-            self._running = True
-
         reqid = uuid.uuid4()
         # calculate the hash for the task based on its name
         h = adler32(task.name) % self.num_workers
         chosen_q = self._task_queues[h]
         chosen_q.put((reqid, task))
+        if not self._workers[h].is_alive():
+            msg = "Worker '%d' has died!" % h
+            logger.critical(msg)
+            raise RuntimeError(msg)
 
         return reqid
 
@@ -250,9 +251,18 @@ class WorkersPool(object):
         """ Submit a :class:`Task` instance to be run by one of the processes """
         self._req_lock.acquire()
         logger.debug("Acquired request lock for task '%s'", task)
-        logger.debug("Submitting request '%s'", task)
+        if not self._running:
+            self.start()
+
         # submit subscription request to queue
-        res = self._submit(task)
+        if not self._stopping:
+            # don't accept requests if we are shutting down
+            logger.info("Submitting request '%s'", task)
+            res = self._submit(task)
+        else: 
+            logger.warn("Request for '%s' received while shutting down", task)
+            res = None
+
         self._req_lock.release()
         logger.debug("Released request lock for task '%s'", task)
         return res
@@ -280,6 +290,7 @@ class WorkersPool(object):
         if self._running: 
             logger.warn("Workers already running.")
         else:
+            self._running = True
             for w in self._workers:
                 w.daemon = True
                 logger.info("Starting worker %s", w.name)
@@ -290,9 +301,11 @@ class WorkersPool(object):
             logger.warn("Workers weren't running.")
         else:
             logger.info("Stopping workers...")
+            self._stopping = True
             [ q.put(Worker.STOP_SENTINEL) for q in self._task_queues ]
             self.join()
             self._running = False
+            self._stopping = False
 
 
 ##############################################
