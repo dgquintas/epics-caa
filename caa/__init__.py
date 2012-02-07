@@ -20,9 +20,11 @@ class SubscriptionMode(object):
         mode_name = d['mode']
         try:
             mode_cls = getattr(cls, mode_name)
+            instance = mode_cls(**d)
         except AttributeError:
             raise ValueError("Invalid mode '%s'" % mode_name)
-        instance = mode_cls(**d)
+        except:
+            raise ValueError("Invalid or missing parameters for mode '%s'" % mode_name)
         return instance
     @classmethod
     def register(cls, mode):
@@ -55,7 +57,7 @@ class _Monitor(dict, SubscriptionMode):
         if name in self:
             return self[name]
         else:
-            super(_Monitor, self).__getattr__(name)
+            raise AttributeError(name)
 
     def __str__(self):
         return '%s(delta=%s, max_freq=%s)' % (self.name, self.delta, self.max_freq)
@@ -64,7 +66,7 @@ class _Monitor(dict, SubscriptionMode):
 class _Scan(dict, SubscriptionMode):
     name = 'Scan'
 
-    def __init__(self, period=0.0, **dummy):
+    def __init__(self, period, **dummy):
         """
             :param period: archiving period 
         """
@@ -74,22 +76,13 @@ class _Scan(dict, SubscriptionMode):
         if name in self:
             return self[name]
         else:
-            super(_Scan, self).__getattr__(name)
+            raise AttributeError(name)
 
     def __str__(self):
         return '%s(period=%s)' % (self.name, self.period)
 
 SubscriptionMode.register(_Monitor)
 SubscriptionMode.register(_Scan)
-
-# since represents the time of subscription
-#ArchivedPV = namedtuple('ArchivedPV', 'name, mode, since')
-#class _APVJSONEncoder(json.JSONEncoder):
-#    def default(self, obj):
-#        if isinstance(obj, SubscriptionMode):
-#            return obj.as_dict()
-#        return json.JSONEncoder.default(self, obj)
-#ArchivedPV.JSONEncoder = _APVJSONEncoder
 
 class ArchivedPV(dict):
     __slots__ = ()
