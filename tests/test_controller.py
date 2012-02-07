@@ -311,6 +311,38 @@ class TestController(unittest.TestCase):
 
         filelike.close()
 
+    def test_list_pvs(self):
+        monitor_mode = SubscriptionMode.Monitor()
+        scan_mode = SubscriptionMode.Scan(period=1)
+        now_ts = time.time() * 1e6
+        num_pvs = len(self.pvs)
+        half = num_pvs // 2
+
+        receipts = [ controller.subscribe(pv, monitor_mode) for pv in self.pvs[:half] ]
+        receipts += [ controller.subscribe(pv, scan_mode) for pv in self.pvs[half:] ]
+
+        for _ in self.pvs:
+            controller.get_result(timeout=self.timeout)
+    
+        time.sleep(5)
+
+        all_apvs = [ apv for apv in controller.get_pvs() ]
+        all_pv_names = [ apv.name for apv in all_apvs ]
+        all_pv_modes = [ apv.mode for apv in all_apvs ]
+        all_pv_sinces = [ apv.since for apv in all_apvs ]
+
+        for pv in self.pvs:
+            self.assertIn(pv, all_pv_names)
+
+        for mode in all_pv_modes[:half]:
+            self.assertEqual(monitor_mode, mode)
+        for mode in all_pv_modes[half:]:
+            self.assertEqual(scan_mode, mode)
+
+        for since in all_pv_sinces:
+            self.assertAlmostEqual(now_ts, since, delta=10e6)
+
+
     def tearDown(self):
         for pv in self.pvs:
             controller.unsubscribe(pv)
