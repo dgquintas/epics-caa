@@ -18,6 +18,7 @@ import time
 import itertools
 import json
 import sys
+import fnmatch 
 import multiprocessing
 from collections import defaultdict
 
@@ -68,7 +69,15 @@ def create_schema(server, keyspace, replication_factor=1, recreate=False):
         if keyspace in sm.list_keyspaces():
             sm.drop_keyspace(keyspace)
 
-    if keyspace not in sm.list_keyspaces():
+    if keyspace in sm.list_keyspaces():
+        # remove all PVs from the DB
+        # Used to cleanup after an execution terminates
+        # without cleaning after itself (ie, after a crash)
+        logger.debug("Performing _cleanup")
+        apvs = list_pvs('*', '*')
+        for apv in apvs:
+            remove_pv(apv.name)
+    else: # keyspace doesn't exist. Create it
         #create it
         sm.create_keyspace(keyspace, 
                 pycassa.system_manager.SIMPLE_STRATEGY, {'replication_factor': '1'})
@@ -187,7 +196,7 @@ def save_pv(pvname, mode):
 
 ###### REMOVERS ######################
 def remove_pv(pvname):
-    logger.debug("Removing pv subscription '%s'", pvname)
+    logger.debug("Removing PV '%s'", pvname)
     _cf('pvs').remove(pvname) 
 
 
@@ -215,20 +224,24 @@ def read_status(pvname):
     finally:
         return res
 
-def list_pvs(modes=SubscriptionMode.available_modes):
+def list_pvs(pvname_pattern, modename_pattern):
     """ Returns an iterator over the list of PV's matching the modes in 
         the ``modes`` list. 
         If ``modes`` isn't specified, return all known PV's
     """
     res = iter([])
-    for mode in modes:
-        jsoned_mode_name = json.dumps(mode.name)
+    available_mode_names = [m.name for m in SubscriptionMode.available_modes]
+    for mname in fnmatch.filter(available_mode_names, modename_pattern):
+        jsoned_mode_name = json.dumps(mname)
         expr = pycassa.index.create_index_expression('mode', jsoned_mode_name)
         cls = pycassa.index.create_index_clause([expr], count=2**31)
         res = itertools.chain(res, _cf('pvs').get_indexed_slices(cls))
     def APVGen():
         for pv in res:
             pvname, pvinfo = pv
+            if not fnmatch.fnmatchcase(pvname, pvname_pattern):
+                continue
+
             since = pvinfo.pop('since') 
             
             mode_dict = dict( (k, json.loads(v)) for k,v in pvinfo.iteritems() )
@@ -257,8 +270,8 @@ def read_values(pvname, fields, limit, ini, end):
 
     try:
         timeline = _cf('update_timeline').get(pvname, \
-                column_count=limit, \
-                column_start=ts_ini, column_finish=ts_end)
+                column_count=limit, column_reversed=True,\
+                column_start=ts_end, column_finish=ts_ini)
     except pycassa.NotFoundException:
         return []
     res = _join_timeline_with_updates(timeline, fields)
