@@ -49,6 +49,8 @@ class TimerThread(threading.Thread):
     """ A thread that takes care of invoking periodic events """
 
     STOP_SENTINEL = '__STOP'
+    REMOVE_TASK_TOKEN = '__REMOVE_TASK'
+    ADD_TASK_TOKEN = '__ADD_TASK'
 
     def __init__(self, inq, name, workers):
         """ :param inq: synchronized LIFO queue where :class:`Task` instances are
@@ -57,35 +59,45 @@ class TimerThread(threading.Thread):
         """
         threading.Thread.__init__(self, name=name)
         self._inq = inq
-        self.tasks = []
-        self.state = collections.defaultdict(dict)
+        self.tasks = {}
         self.workers = workers
 
     def run(self):
         while True:
             t = time.time()
             try:
-                item = self._inq.get(block=True, timeout=0.1)
-                logger.debug("Gotten item %s", item)
-                if item == self.STOP_SENTINEL:
+                action, args = self._inq.get(block=True, timeout=0.1)
+                logger.debug("Gotten action '%s' with args '%s'", action, args)
+                if action == self.STOP_SENTINEL:
                     break
+                elif action == self.REMOVE_TASK_TOKEN:
+                    try:
+                        task_name = args[0]
+                        removed = self.tasks.pop(task_name)
+                        logger.debug("Removed '%s' from timer thread", str(removed))
+                    except KeyError:
+                        logger.error("Attempted to remove unknown task '%s' from timer thread", task_name)
+
+                elif action == self.ADD_TASK_TOKEN:
+                    task, period = args
+                    logger.debug("Adding task '%s' with period '%f'", 
+                            task, period)
+                    self.tasks[task.name] = [t,task, period]
                 else:
-                    reqid, task, period = item
-                    logger.debug("Adding task '%s' with id '%s' and period '%f'", 
-                            task, reqid, period)
-                    self.tasks.append([t,task, period])
+                    logger.error("Unknown action '%s'", action)
 
             except queue.Empty: 
                 pass
 
             # traverse task list checking for ripe ones
-            for i, (enq_t, task, period) in enumerate(self.tasks):
+            for enq_t, task, period in self.tasks.itervalues():
                 if t - enq_t >= period:
                     # run the task to be invoked when period is over
+                    logger.debug("Time up for task '%s'", task)
                     self.workers.request(task)
 
                     # update enqueue time 
-                    self.tasks[i][0] = t
+                    self.tasks[task.name][0] = t
 
         logger.info("Timer %s exiting.", threading.current_thread().name)
 
@@ -115,21 +127,14 @@ class TimersPool(object):
     def num_timers(self):
         return len(self._timers)
 
-    def _submit(self, task, period):
-        if not self._running:
-            self.start()
+    @property 
+    def num_active_tasks(self):
+        return sum( len(t.tasks) for t in self._timers )
 
-        reqid = uuid.uuid4()
-        h = adler32(task.name) % self.num_timers
+    def _get_queue_for(self, name):
+        h = adler32(name) % self.num_timers
         chosen_q = self._task_queues[h]
-        chosen_q.put((reqid, task, period))
-
-        return reqid
-
-    def subscribe(self, task):
-        logger.debug("Submitting subscription request to '%s'", task.name)
-        # submit subscription request to queue
-        return self._submit(task)
+        return chosen_q
 
     def request(self, task, period):
         """ Add `task` to one of the pool's timers. 
@@ -139,9 +144,20 @@ class TimersPool(object):
             :param task: the task to add to one of the pool's timers.
             :param period: a float representing the period for `task`, in seconds (or fractions thereof).
         """
-        logger.debug("Submitting periodic request '%s' with period %f", task, period)
-        # submit subscription request to queue
-        return self._submit(task, period)
+        if not self._running:
+            self.start()
+
+        if period <= 0:
+            raise ValueError("Invalid period (%s). Must be > 0", period)
+
+        q = self._get_queue_for(task.name)
+        logger.debug("Submitting periodic request '%s' with period %f s", task, period)
+        q.put((TimerThread.ADD_TASK_TOKEN, (task, period) ))
+
+    def remove_task(self, taskname):
+        q = self._get_queue_for(taskname)
+        logger.debug("Removing periodic task '%s'", taskname)
+        q.put( (TimerThread.REMOVE_TASK_TOKEN, (taskname,) ) )
 
     def start(self):
         """ Start all the pool's :class:`TimerThread`s """
@@ -160,7 +176,7 @@ class TimersPool(object):
             logger.warn("Timers weren't running.")
         else:
             logger.info("Stopping timers...")
-            [ q.put(TimerThread.STOP_SENTINEL) for q in self._task_queues ]
+            [ q.put((TimerThread.STOP_SENTINEL, None)) for q in self._task_queues ]
             self.join()
             self._running = False
 
@@ -168,6 +184,7 @@ class TimersPool(object):
         """ Blocks until all pending requests have finished """
         logger.debug("%s blocking until all pending requests finish.", self)
         [ t.join() for t in self._timers ]
+        logger.debug("%s joined all its threads", self)
 
 
 #################################
@@ -189,13 +206,15 @@ class Worker(Process):
             logger.debug("Processing task '%s' with id '%s'.Queue size: %d ", task, reqid, self._inq.qsize())
             
             t_res = task(self.state[task.name])  
+            
 
             task.result = t_res
             task.done = True
             logger.debug("Task with id '%s' for PV '%s' completed. Result: '%r'", \
                     reqid, task.name, task.result )
 
-            self._outq.put((reqid, task))
+            if t_res:
+                self._outq.put((reqid, task))
 
             if not self.state[task.name]:
                 del self.state[task.name]
@@ -257,7 +276,7 @@ class WorkersPool(object):
         # submit subscription request to queue
         if not self._stopping:
             # don't accept requests if we are shutting down
-            logger.info("Submitting request '%s'", task)
+            logger.debug("Submitting request '%s'", task)
             res = self._submit(task)
         else: 
             logger.warn("Request for '%s' received while shutting down", task)
