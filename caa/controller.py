@@ -4,6 +4,7 @@ import json
 import logging
 import uuid
 import time 
+import datetime 
 from caa import ArchivedPV, SubscriptionMode
 
 import datastore
@@ -18,6 +19,7 @@ logger = logging.getLogger('controller')
 
 workers = WorkersPool(config.CONTROLLER['num_workers'])
 timers = TimersPool(workers, config.CONTROLLER['num_timers'])
+
 
 def subscribe(pvname, mode):
     """ Requests subscription to ``pvname`` with mode ``mode``.
@@ -41,8 +43,9 @@ def subscribe(pvname, mode):
 
         return receipt
     else:
-        logger.warn("Already subscribed to PV '%s'", pv.name)
-        
+        msg = "Already subscribed to PV '%s'" % pv.name
+        logger.warn(msg)
+        raise ValueError(msg)
 
 def unsubscribe(pvname):
     """ Stops archiving the PV. 
@@ -53,17 +56,23 @@ def unsubscribe(pvname):
     if apv:
         datastore.remove_pv(apv.name)
         task = Task(apv.name , epics_unsubscribe, apv.name)
+
+        if isinstance(apv.mode, SubscriptionMode.Scan):
+            # cancel timers 
+            timers.remove_task(task.name)
+
         return workers.request(task)
     else:
-        logger.warn("Requesting unsubscription to unknown PV '%s'", pvname)
-        return False
+        msg = "Requesting unsubscription to unknown PV '%s'" % pvname
+        logger.warn(msg)
+        raise ValueError(msg)
 
 def get_result(block=True, timeout=None):
     """ Returns the receipt and *a* :class:`Task` instance with a ``result`` attribute.
 
         See :meth:`WorkersPool.get_result` 
     """
-    return workers.get_result()
+    return workers.get_result(block, timeout)
 
 
 def get_info(pvname):
@@ -81,8 +90,9 @@ def get_values(pvname, fields=[], limit=100, from_date=None, to_date=None):
     """ Returns latest archived data for the PV as a list with at most ``limit`` elements """
     return datastore.read_values(pvname, fields, limit, from_date, to_date)
 
-def get_pvs():
-    return datastore.list_pvs()
+def get_pvs(pvname_pattern='*', modename_pattern='*'):
+    """ Returns an iterator over the PVs known by the archiver in :class:`ArchivedPV` form """
+    return datastore.list_pvs(pvname_pattern, modename_pattern)
 
 def load_config(fileobj):
     """ Restore the state defined by the config.
@@ -91,7 +101,9 @@ def load_config(fileobj):
     """
     receipts = []
     for line in fileobj:
-        name, mode_dict, _ = json.loads(line)
+        d_line = json.loads(line)
+        mode_dict = d_line['mode']
+        name = d_line['name']
         mode = SubscriptionMode.parse(mode_dict)
         receipt = subscribe(name, mode)
         receipts.append(receipt)
@@ -100,23 +112,35 @@ def load_config(fileobj):
 def save_config(fileobj):
     """ Save current subscription state. """
     # get a list of the ArchivedPV values 
-    apvs = datastore.list_pvs()
+    apvs = get_pvs()
     for apv in apvs:
-        fileobj.write(json.dumps(apv, indent=4) + '\n', )
+        del apv['since']
+        fileobj.write(json.dumps(apv) + '\n', )
 
 def shutdown():
+    # FIXME: implement this using unsubscribe('*')
+    logger.info("Unsubscribing to all subscribed PVs...")
+    apvs = get_pvs()
+    for apv in apvs:
+        unsubscribe(apv.name)
+
     if workers.running:
         workers.stop()
     if timers.running:
         timers.stop()
+
+
     logger.info("Shutdown completed")
+
+def initialize(replication_factor=2, recreate=False):
+    datastore.create_schema(config.DATASTORE['servers'][0], config.DATASTORE['keyspace'], replication_factor, recreate)
 
 
 ##################### TASKS #######################
 def epics_subscribe(state, pvname, mode):
     """ Function to be run by the worker in order to subscribe """
     import epics
-    logger.info("Subscribing to %s", pvname)
+    logger.info("Subscribing to '%s' with mode '%s'", pvname, mode)
     conn_timeout = config.CONTROLLER['epics_connection_timeout']
 
     sub_mask = None
@@ -138,7 +162,9 @@ def epics_subscribe(state, pvname, mode):
     pv.wait_for_connection()
 
     state['pv'] = pv
-    return True
+    return True # needed to signal that the subscription req has been completed.
+                # for example, to be able to sync on controller.get_result 
+
 
 def epics_unsubscribe(state, pvname):
     """ Function to be run by the worker in order to unsubscribe """
@@ -148,19 +174,26 @@ def epics_unsubscribe(state, pvname):
     del state['pv']
 
     datastore.remove_pv(pvname)
-    return True
+    return True # needed to signal that the subscription req has been completed.
+                # for example, to be able to sync on controller.get_result 
+
 
 def epics_periodic(state, pvname, period):
     """ Invoked every time a period for a scanned PV is due """
     logger.debug("Periodic scan for PV '%s' with period %f secs", pvname, period)
     
     # get the pv's value
-    pv = state['pv']
-
-    #generate the id for the update
-    update_id = uuid.uuid1()
-    data = _gather_pv_data(pv)
-    datastore.save_update(update_id, **data) 
+    pv = state.get('pv')
+    if pv:
+        if pv.status == 1: # connected
+            #generate the id for the update
+            update_id = uuid.uuid1()
+            data = _gather_pv_data(pv)
+            datastore.save_update(update_id, **data) 
+        else: # not connected
+            logger.warn("Ignoring non-connected PV '%s'", pvname)
+    else:
+        logger.error("Missing data in 'state' for '%s'", pvname)
 
 
 ##################### CALLBACKS #######################
@@ -218,6 +251,9 @@ def _gather_pv_data(pv):
                     'upper_ctrl_limit', 'lower_ctrl_limit')
     
     data = dict( (k, getattr(pv, k)) for k in to_consider)
+    dt = datetime.datetime.fromtimestamp(data['timestamp'])
+    data['datetime'] = dt.isoformat(' ')
     return data
 
+##############################################################
 
