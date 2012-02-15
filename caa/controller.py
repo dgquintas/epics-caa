@@ -67,13 +67,8 @@ def unsubscribe(pvname):
         logger.warn(msg)
         raise ValueError(msg)
 
-def get_result(block=True, timeout=None):
-    """ Returns the receipt and *a* :class:`Task` instance with a ``result`` attribute.
-
-        See :meth:`WorkersPool.get_result` 
-    """
-    return workers.get_result(block, timeout)
-
+def get_result(reqid):
+    return workers.get_result(reqid)
 
 def get_info(pvname):
     """ Returns an :class:`ArchivedPV` representing the PV. 
@@ -107,7 +102,7 @@ def load_config(fileobj):
         mode = SubscriptionMode.parse(mode_dict)
         receipt = subscribe(name, mode)
         receipts.append(receipt)
-    return receipt
+    return receipts
 
 def save_config(fileobj):
     """ Save current subscription state. """
