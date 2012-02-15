@@ -193,10 +193,10 @@ class Worker(Process):
 
     STOP_SENTINEL = '__STOP'
 
-    def __init__(self, inq, outq, name):
+    def __init__(self, inq, out, name):
         Process.__init__(self, name=name)
         self._inq = inq
-        self._outq = outq
+        self._out = out
 
         self.state = collections.defaultdict(dict)
 
@@ -214,7 +214,7 @@ class Worker(Process):
                     reqid, task.name, task.result )
 
             if t_res:
-                self._outq.put((reqid, task))
+                self._out[reqid] = task
 
             if not self.state[task.name]:
                 del self.state[task.name]
@@ -228,15 +228,13 @@ class WorkersPool(object):
         They manage PV's callbacks as well as ``get`` requests from the 
         scanned PVs.
     """
-
-
     def __init__(self, num_workers=cpu_count()):
-        self._done_queue = multiprocessing.Queue()
+        self._completed_dict = multiprocessing.Manager().dict()
         self._task_queues = []
         self._workers = []
         for i in range(num_workers):
             tq = multiprocessing.Queue()
-            w = Worker(tq, self._done_queue, "Worker-%d" % i)
+            w = Worker(tq, self._completed_dict, "Worker-%d" % i)
 
             self._task_queues.append(tq)
             self._workers.append(w)
@@ -287,17 +285,8 @@ class WorkersPool(object):
         return res
 
 
-    def get_result(self, block=True, timeout=None):
-        """ Returns the receipt and *a* :class:``Task`` instance with 
-            a populated ``result`` attribute. 
-
-            :param boolean block: If ``True``, will block until a result in available. Otherwise,
-            return an item if one is immediately available, else raise :exc:`Queue.Empty`.
-            :param float timeout: If blocking, how many seconds to wait. If no result 
-            is available after that many seconds, :exc:`Queue.Empty` exception is raised.
-            :rtype: a list of the form ``(receipt, :class:`Task`-instance)``
-        """
-        return self._done_queue.get(block, timeout)
+    def get_result(self, reqid):
+        return self._completed_dict.pop(reqid, None)
  
     def join(self):
         """ Blocks until all pending requests have finished """
