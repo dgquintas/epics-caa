@@ -1,48 +1,53 @@
 from handlers.base import BaseHandler
+import json 
 from tornado.ioloop import IOLoop
 
 from caa import controller, SubscriptionMode
 
 import logging
 import datetime 
+import fnmatch
 
 logger = logging.getLogger('server.caa.' + __name__)
 
+controller.initialize()
+
 class SubscriptionHandler(BaseHandler):
     def get(self):
-        # we expect the mode and its parameters to
-        # be encoded in the request's arguments
+        pvpattern = self.get_argument('pvname', '*')
+        mpattern = self.get_argument('mode', '*')
         
-        pvname = self.get_argument('pvname')
-        mode_name = self.get_argument('mode')
-
-        available_modes_names = [ m.name for m in SubscriptionMode.available_modes]
-        if mode_name not in available_modes_names:
-            self.fail("Unknown mode '%s'" % mode_name)
-        else:
-            # we leave it up to SubscriptionMode.parse to
-            # determine if the arguments to the mode have
-            # been been actually passed 
-            args = dict(self.request.arguments)
-            args.pop('pvname')
-            mode_args = dict( ( (k,v[0]) for k,v in args.iteritems() ) )
-            try:
-                mode = SubscriptionMode.parse(mode_args)
-            except Exception as e:
-                self.fail(e)
-                raise
-
-            # create subscription to pvname with mode
-            controller.subscribe(pvname, mode)
-
-            self.win()
-            
-
-class UnsubscriptionHandler(BaseHandler):
-    def get(self): 
-        pvname = self.get_argument('pvname')
-        res = controller.unsubscribe(pvname)
+        apvs_gen = controller.get_pvs(pvpattern, mpattern)
+        res = [ {'pvname': apv.name, 'mode': apv.mode} for apv in apvs_gen ]
         self.win(res)
+        
+    def post(self):
+        body_json = self.request.body
+        if not body_json:
+            self.fail("Empty request")
+        try:
+            body = json.loads(body_json)
+            pvname = body['pvname']
+            mode_raw = body['mode']
+            mode = SubscriptionMode.parse(mode_raw)
+            controller.subscribe(pvname, mode)
+            self.win({'pvname': pvname, 'mode': mode})
+        except Exception as e:
+            logger.exception(e)
+            self.fail(str(e))
+
+    def delete(self):
+        body_json = self.request.body
+        if not body_json:
+            self.fail("Empty request")
+        try:
+            body = json.loads(body_json)
+            pvname = body['pvname']
+            controller.unsubscribe(pvname)
+            self.win({'pvname': pvname})
+        except Exception as e:
+            logger.exception(e)
+            self.fail(str(e))
 
 class InfoHandler(BaseHandler):
     def get(self):
@@ -52,10 +57,10 @@ class InfoHandler(BaseHandler):
 
 class StatusHandler(BaseHandler):
     def get(self): 
-        pvnames = self.get_arguments('pvname')
+        pvname = self.get_argument('pvname')
 
-        status = controller.get_status(pvnames)
-        self.win(status)
+        status = controller.get_status(pvname)
+        self.win(status if status else None)
 
 class ValuesHandler(BaseHandler):
     def get(self):
@@ -70,20 +75,25 @@ class ValuesHandler(BaseHandler):
             from_date = datetime.datetime.fromtimestamp(float(from_date))
         if to_date:
             to_date = datetime.datetime.fromtimestamp(float(to_date))
-            
-        res = controller.get_values(pvname, fields, limit, from_date, to_date)
-        self.win(res)
+        
+        try:
+            res = controller.get_values(pvname, fields, limit, from_date, to_date)
+            self.win(res if res else None)
+        except KeyError as e:
+            self.fail("Invalid field: %s" % e)
+        except Exception as e:
+            self.fail("Error: %s" % e)
+
 
 import cStringIO
-class ConfigHandlerSave(BaseHandler):
+class ConfigHandler(BaseHandler):
     def get(self):
         f = cStringIO.StringIO()
         controller.save_config(f)
         f.seek(0)
         self.write(f.read())
 
-class ConfigHandlerLoad(BaseHandler):
-    def put(self):
+    def post(self):
         data = self.request.body
         try:
             res = controller.load_config(data)
@@ -91,10 +101,4 @@ class ConfigHandlerLoad(BaseHandler):
         except Exception as e:
             self.fail(e)
 
-class ShutdownHandler(BaseHandler):
-    def get(self):
-        controller.shutdown()
-        self.win(None)
-        ioloop = IOLoop.instance()
-        ioloop.stop()
 
