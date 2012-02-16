@@ -88,15 +88,15 @@ def get_pvs(pvname_pattern='*', modename_pattern='*'):
     """ Returns an iterator over the PVs known by the archiver in :class:`ArchivedPV` form """
     return datastore.list_pvs(pvname_pattern, modename_pattern)
 
-def load_config(fileobj):
+def load_config(configstr):
     """ Restore the state defined by the config.
     
         Returns a list with the receipts of the restored subscriptions.
     """
     receipts = []
-    raw = ( line for line in fileobj if not line.lstrip().startswith('#') )
-    raw = ''.join(raw)
-    decoded_l = json.loads(raw)
+    without_comments = [ line for line in configstr.splitlines() if not line.lstrip().startswith('#') ]
+    jsondata = ''.join(without_comments)
+    decoded_l = json.loads(jsondata)
     for item in decoded_l:
         mode_dict = item['mode']
         name = item['name']
@@ -105,19 +105,26 @@ def load_config(fileobj):
         receipts.append(receipt)
     return receipts
 
-def save_config(fileobj):
+def save_config():
     """ Save current subscription state. """
+    from contextlib import closing
+    import cStringIO 
     from getpass import getuser
     from platform import uname
-    # get a list of the ArchivedPV values 
-    apvs = get_pvs()
-    raw = []
-    for apv in apvs:
-        del apv['since']
-        raw.append(apv)
-    datestr = datetime.datetime.now().ctime()
-    fileobj.write("# Generated on %s by '%s' on '%s'\n" % (datestr, getuser(), uname()[1] ) )
-    fileobj.write(json.dumps(raw, indent=4))
+
+    with closing(cStringIO.StringIO()) as out:
+        # get a list of the ArchivedPV values 
+        apvs = get_pvs()
+        raw = []
+        for apv in apvs:
+            del apv['since']
+            raw.append(apv)
+        datestr = datetime.datetime.now().ctime()
+        out.write("# Generated on %s by '%s' on '%s'\n" % (datestr, getuser(), uname()[1] ) )
+        out.write(json.dumps(raw, indent=4))
+
+        return out.getvalue()
+
 
 def shutdown():
     logger.info("Unsubscribing to all subscribed PVs...")

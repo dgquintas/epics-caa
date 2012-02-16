@@ -292,19 +292,14 @@ class TestController(unittest.TestCase):
         self.assertEqual(None, info)
 
     def test_save_config(self):
-        import StringIO
-        filelike = StringIO.StringIO()
         controller.subscribe('DEFAULT.PV', SubscriptionMode.Monitor())
         controller.subscribe('FOO.PV',  SubscriptionMode.Monitor(0.123))
         controller.subscribe('BAR.PV', SubscriptionMode.Scan(123.1)) 
 
-        controller.save_config(filelike)
-        logger.info("Saved config looks like:\n%s", filelike.getvalue())
-        filelike.close()
+        cfg = controller.save_config()
+        logger.info("Saved config looks like:\n%s", cfg)
 
     def test_load_config(self):
-        import StringIO
-        filelike = StringIO.StringIO()
         pvnames = ('DEFAULT.PV', 'FOO.PV', 'BAR.PV')
         
         reqids = []
@@ -314,16 +309,14 @@ class TestController(unittest.TestCase):
 
         wait_for_reqids(controller.get_result, reqids)
 
-        controller.save_config(filelike)
-        filelike.seek(0)
+        cfg = controller.save_config()
 
         reqids = controller.unsubscribe('*')
         wait_for_reqids(controller.get_result, reqids)
 
-        logger.info("Trying to load:\n%s", filelike.read())
-        filelike.seek(0)
+        logger.info("Trying to load:\n%s", cfg)
 
-        reqids = controller.load_config(filelike)
+        reqids = controller.load_config(cfg)
         results = wait_for_reqids(controller.get_result, reqids)
 
         pvnames_from_receipts = [ task.name for task in results ]
@@ -347,7 +340,6 @@ class TestController(unittest.TestCase):
         self.assertEqual( av.mode.name, SubscriptionMode.Scan.name )
         self.assertEqual( av.mode.period, 123.1 )
 
-        filelike.close()
 
     def test_get_pvs(self):
         monitor_mode = SubscriptionMode.Monitor()
