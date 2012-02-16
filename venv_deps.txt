@@ -1,8 +1,7 @@
 distribute==0.6.19
-gevent==0.13.6
-greenlet==0.3.1
-mock==0.7.2
-pycassa==1.3.0
-pyepics==3.1.4
+pycassa==1.4.0
+pyepics==3.2.0
 thrift==0.8.0
+tornado==2.2
+tornado-cli==0.1
 wsgiref==0.1.2
