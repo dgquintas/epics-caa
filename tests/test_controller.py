@@ -12,6 +12,17 @@ logger = logging.getLogger('TestController')
 
 NUM_RANDOM_PVS = 10
 
+def wait_for_reqids(getterf, reqids):
+    res = []
+    for reqid in reqids:
+        while True:
+            r = getterf(reqid)
+            if r:
+                res.append(r)
+                break
+            time.sleep(0.1)
+    return res
+
 class TestController(unittest.TestCase):
     
     @classmethod
@@ -20,7 +31,7 @@ class TestController(unittest.TestCase):
 
     def setUp(self):
         reload(controller)
-        datastore.create_schema(config.DATASTORE['servers'][0], config.DATASTORE['keyspace'], recreate=True)
+        controller.initialize(recreate=True)
 
         self.long_pvs = [ 'test:long%d' % i for i in range(1,NUM_RANDOM_PVS) ]
         self.double_pvs = [ 'test:double%d' % i for i in range(1,NUM_RANDOM_PVS) ]
@@ -29,14 +40,12 @@ class TestController(unittest.TestCase):
 
         self.pvs = self.existing_pvs + self.fake_pvs
 
-        self.timeout = config.CONTROLLER['epics_connection_timeout']*1.5 #for good measure
+        self.timeout = 1
 
     def test_get_status(self):
-        for pv in self.pvs:
-            controller.subscribe(pv, SubscriptionMode.Monitor())
+        reqids = [controller.subscribe(pv, SubscriptionMode.Monitor()) for pv in self.pvs]
+        results = wait_for_reqids(controller.get_result, reqids)
 
-        results = [ controller.get_result(timeout=self.timeout) 
-                    for _ in range(len(self.pvs)) ]
         self.assertEqual( len(results), len(self.pvs) )
 
         for pv in self.existing_pvs: 
@@ -71,7 +80,7 @@ class TestController(unittest.TestCase):
             for (i,value) in enumerate(values):
                 self.assertEqual(longpv, value['pvname'])
                 self.assertEqual('long', value['type'])
-                self.assertEqual(first_value+i, int(value['value']))
+                self.assertEqual(first_value-i, int(value['value']))
 
         for doublepv in self.double_pvs:
             values = controller.get_values(doublepv, limit=expected_num_values)
@@ -81,7 +90,7 @@ class TestController(unittest.TestCase):
             for (i,value) in enumerate(values):
                 self.assertEqual(doublepv, value['pvname'])
                 self.assertEqual('double', value['type'])
-                self.assertEqual(first_value+i, float(value['value']))
+                self.assertEqual(first_value-i, float(value['value']))
 
         for fakepv in self.fake_pvs:
             values = controller.get_values(fakepv)
@@ -138,7 +147,7 @@ class TestController(unittest.TestCase):
                 for i in range(len(values)-1):
                     ith = values[i]['timestamp']
                     ip1th = values[i+1]['timestamp'] 
-                    self.assertGreaterEqual( ip1th-ith, max_period) 
+                    self.assertGreaterEqual( ith-ip1th, max_period) 
 
         for fakepv in self.fake_pvs:
             values = controller.get_values(fakepv)
@@ -146,7 +155,7 @@ class TestController(unittest.TestCase):
 
     def test_get_values_delta(self):
         # give it time to gather some data
-        wait_for = 5
+        wait_for = 10
         ioc_freq = 10 # Hz
         delta = 2
 
@@ -166,31 +175,26 @@ class TestController(unittest.TestCase):
                 for i in range(len(values)-1):
                     ith = values[i]['value']
                     ip1th = values[i+1]['value'] 
-                    self.assertGreaterEqual( ip1th-ith, delta) 
+                    self.assertGreaterEqual( ith-ip1th, delta) 
 
         for fakepv in self.fake_pvs:
             values = controller.get_values(fakepv)
             self.assertEqual([], values)
 
     def test_subscribe(self, mode=SubscriptionMode.Monitor()):
-        receipts = [ controller.subscribe(pv, mode) for pv in self.pvs ]
-
-        done_receipts = dict(controller.get_result(timeout=self.timeout) \
-                for _ in self.pvs )
-
+        reqids = [ controller.subscribe(pv, mode) for pv in self.pvs ]
+        results = wait_for_reqids(controller.get_result, reqids)
+        
         apvs = [ controller.get_info(pv) for pv in self.pvs ]
         for apv in apvs:
             self.assertIn(apv.name, self.pvs)
 
-        for receipt in receipts:
-            self.assertIn(receipt, done_receipts)
-
-        pvnames_from_receipts = [ subreq.name for subreq in done_receipts.itervalues() ]
+        pvnames_from_receipts = [ task.name for task in results ]
         for pv in self.pvs:
             self.assertIn(pv, pvnames_from_receipts)
 
-        for completed_req in done_receipts.itervalues():
-            self.assertTrue(completed_req.result)
+        for task in results:
+            self.assertTrue(task.result)
 
     def test_subscribe_scan(self):
         for pv in self.pvs[:4]:
@@ -207,7 +211,7 @@ class TestController(unittest.TestCase):
             res = controller.get_values(pv)
             self.assertAlmostEqual(sleep_for/p, len(res), delta=1)
 
-    def test_unsubscribe(self):
+    def test_unsubscribe_monitor(self):
         controller.subscribe(self.long_pvs[0], SubscriptionMode.Monitor())
 
         #check that the system has registered the subscription
@@ -216,7 +220,6 @@ class TestController(unittest.TestCase):
 
         # wait for a while so that we gather some data 
         time.sleep(2)
-
 
         # request unsubscription
         self.assertTrue(controller.unsubscribe(self.long_pvs[0]))
@@ -234,8 +237,36 @@ class TestController(unittest.TestCase):
         # we shouldn't have received any data during the last sleep period
         self.assertEqual(len(before), len(after))
 
-        # unsubscribing to an unknown pv
-        self.assertFalse(controller.unsubscribe('foobar'))
+    def test_unsubscribe_unknown(self):
+        self.assertEqual([], controller.unsubscribe('foobar'))
+
+    def test_unsubscribe_scan(self):
+        controller.subscribe(self.long_pvs[0], SubscriptionMode.Scan(period=1))
+
+        #check that the system has registered the subscription
+        apv = controller.get_info(self.long_pvs[0])
+        self.assertEqual( apv.name, self.long_pvs[0] )
+
+        # wait for a while so that we gather some data 
+        time.sleep(3)
+
+        # request unsubscription
+        self.assertTrue(controller.unsubscribe(self.long_pvs[0]))
+        before = controller.get_values(self.long_pvs[0])
+
+        # verify that the system has removed the pv
+        info = controller.get_info(self.long_pvs[0])
+        self.assertEqual(None, info)
+
+        # wait to see if we are still receiving data 
+        time.sleep(3)
+        after = controller.get_values(self.long_pvs[0])
+
+        # we shouldn't have received any data during the last sleep period
+        self.assertEqual(len(before), len(after))
+
+        # and the scan task's timer should have been cleaned up
+        self.assertEqual(controller.timers.num_active_tasks, 0)
 
 
     def test_get_info(self):
@@ -274,21 +305,28 @@ class TestController(unittest.TestCase):
     def test_load_config(self):
         import StringIO
         filelike = StringIO.StringIO()
-        lines = ( 
-            '["DEFAULT.PV", {"mode": "Monitor", "delta": 0.0}, 1322529100410510]\n',
-            '["FOO.PV", {"mode": "Monitor", "delta": 0.123}, 1322529100425237]\n',
-            '["BAR.PV", {"mode": "Scan", "period": 123.1}, 1322529100431136]\n'
-        )
-        filelike.writelines(lines)
-        filelike.seek(0)
-        logger.info("Trying to load: %s", filelike.read())
+        pvnames = ('DEFAULT.PV', 'FOO.PV', 'BAR.PV')
+        
+        reqids = []
+        reqids.append(controller.subscribe('DEFAULT.PV', SubscriptionMode.Monitor()))
+        reqids.append(controller.subscribe('FOO.PV',  SubscriptionMode.Monitor(0.123)))
+        reqids.append(controller.subscribe('BAR.PV', SubscriptionMode.Scan(123.1)))
+
+        wait_for_reqids(controller.get_result, reqids)
+
+        controller.save_config(filelike)
         filelike.seek(0)
 
-        controller.load_config(filelike)
-        done_receipts = (controller.get_result(timeout=self.timeout) \
-                for _ in range(len(lines)) )
+        reqids = controller.unsubscribe('*')
+        wait_for_reqids(controller.get_result, reqids)
 
-        pvnames_from_receipts = [ task.args[0] for (_,task) in done_receipts ]
+        logger.info("Trying to load:\n%s", filelike.read())
+        filelike.seek(0)
+
+        reqids = controller.load_config(filelike)
+        results = wait_for_reqids(controller.get_result, reqids)
+
+        pvnames_from_receipts = [ task.name for task in results ]
 
         self.assertIn('DEFAULT.PV', pvnames_from_receipts)
         self.assertIn('FOO.PV', pvnames_from_receipts)
@@ -311,7 +349,7 @@ class TestController(unittest.TestCase):
 
         filelike.close()
 
-    def test_list_pvs(self):
+    def test_get_pvs(self):
         monitor_mode = SubscriptionMode.Monitor()
         scan_mode = SubscriptionMode.Scan(period=1)
         now_ts = time.time() * 1e6
@@ -321,9 +359,8 @@ class TestController(unittest.TestCase):
         receipts = [ controller.subscribe(pv, monitor_mode) for pv in self.pvs[:half] ]
         receipts += [ controller.subscribe(pv, scan_mode) for pv in self.pvs[half:] ]
 
-        for _ in self.pvs:
-            controller.get_result(timeout=self.timeout)
-    
+        wait_for_reqids(controller.get_result, receipts)
+            
         time.sleep(5)
 
         all_apvs = [ apv for apv in controller.get_pvs() ]
@@ -343,9 +380,27 @@ class TestController(unittest.TestCase):
             self.assertAlmostEqual(now_ts, since, delta=10e6)
 
 
+        long_apvs = [apv for apv in controller.get_pvs('*long*')]
+        for long_apv in long_apvs:
+            self.assertRegexpMatches(long_apv.name, '.*long.*')
+
+        scan_apvs = [apv for apv in controller.get_pvs(modename_pattern='Scan')]
+        monitor_apvs = [apv for apv in controller.get_pvs(modename_pattern='Monitor')]
+
+        for scan_apv in scan_apvs:
+            self.assertEqual(scan_apv.mode.name, SubscriptionMode.Scan.name)
+
+        for monitor_apv in monitor_apvs:
+            self.assertEqual(monitor_apv.mode.name, SubscriptionMode.Monitor.name)
+
+
+
     def tearDown(self):
-        for pv in self.pvs:
-            controller.unsubscribe(pv)
+        try:
+            for pv in self.pvs:
+                controller.unsubscribe(pv)
+        except ValueError:
+            pass
 
         controller.shutdown()
         time.sleep(1)

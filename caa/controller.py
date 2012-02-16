@@ -4,6 +4,7 @@ import json
 import logging
 import uuid
 import time 
+import fnmatch
 import datetime 
 from caa import ArchivedPV, SubscriptionMode
 
@@ -39,7 +40,7 @@ def subscribe(pvname, mode):
             # in addition, add it to the timer so that it gets scanned
             # periodically
             periodic_task = Task(pvname, epics_periodic, pvname, mode.period)
-            timers.request(periodic_task, mode.period)
+            timers.schedule(periodic_task, mode.period)
 
         return receipt
     else:
@@ -47,13 +48,14 @@ def subscribe(pvname, mode):
         logger.warn(msg)
         raise ValueError(msg)
 
-def unsubscribe(pvname):
-    """ Stops archiving the PV. 
+def unsubscribe(pvname_pattern):
+    """ Stops archiving the PVs that match the given pattern. 
     
-        Returns a unique request id or `False` if the given `pvname` was unknown.
+        Returns a the request ids for all the generated tasks.
     """
-    apv = get_info(pvname)
-    if apv:
+    known_apvs = get_pvs(pvname_pattern)
+    reqids = []
+    for apv in known_apvs:
         datastore.remove_pv(apv.name)
         task = Task(apv.name , epics_unsubscribe, apv.name)
 
@@ -61,11 +63,8 @@ def unsubscribe(pvname):
             # cancel timers 
             timers.remove_task(task.name)
 
-        return workers.request(task)
-    else:
-        msg = "Requesting unsubscription to unknown PV '%s'" % pvname
-        logger.warn(msg)
-        raise ValueError(msg)
+        reqids.append(workers.request(task))
+    return reqids
 
 def get_result(reqid):
     return workers.get_result(reqid)
@@ -113,11 +112,8 @@ def save_config(fileobj):
         fileobj.write(json.dumps(apv) + '\n', )
 
 def shutdown():
-    # FIXME: implement this using unsubscribe('*')
     logger.info("Unsubscribing to all subscribed PVs...")
-    apvs = get_pvs()
-    for apv in apvs:
-        unsubscribe(apv.name)
+    unsubscribe('*')
 
     if workers.running:
         workers.stop()

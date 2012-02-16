@@ -52,13 +52,14 @@ class TimerThread(threading.Thread):
     REMOVE_TASK_TOKEN = '__REMOVE_TASK'
     ADD_TASK_TOKEN = '__ADD_TASK'
 
-    def __init__(self, inq, name, workers):
+    def __init__(self, inq, reqids, name, workers):
         """ :param inq: synchronized LIFO queue where :class:`Task` instances are
                         submitted in order to add them to the timer.
             :param name: a textual name for the timer thread.
         """
         threading.Thread.__init__(self, name=name)
         self._inq = inq
+        self._reqids = reqids
         self.tasks = {}
         self.workers = workers
 
@@ -79,10 +80,10 @@ class TimerThread(threading.Thread):
                         logger.error("Attempted to remove unknown task '%s' from timer thread", task_name)
 
                 elif action == self.ADD_TASK_TOKEN:
-                    task, period = args
+                    timerid, task, period = args
                     logger.debug("Adding task '%s' with period '%f'", 
                             task, period)
-                    self.tasks[task.name] = [t,task, period]
+                    self.tasks[task.name] = [t, timerid, task, period]
                 else:
                     logger.error("Unknown action '%s'", action)
 
@@ -90,12 +91,12 @@ class TimerThread(threading.Thread):
                 pass
 
             # traverse task list checking for ripe ones
-            for enq_t, task, period in self.tasks.itervalues():
+            for enq_t, timerid, task, period in self.tasks.itervalues():
                 if t - enq_t >= period:
                     # run the task to be invoked when period is over
                     logger.debug("Time up for task '%s'", task)
-                    self.workers.request(task)
-
+                    reqid = self.workers.request(task)
+                    self._reqids.add(timerid, reqid)
                     # update enqueue time 
                     self.tasks[task.name][0] = t
 
@@ -107,12 +108,27 @@ class TimerThread(threading.Thread):
 class TimersPool(object):
     """ Pool of :class:`TimerThread`s """
 
+    class ReqIdsDict(object):
+        def __init__(self):
+            self._lock = threading.Lock()
+            self._d = collections.defaultdict(list)
+
+        def add(self, timerid, reqid):
+            with self._lock:
+                self._d[timerid].append(reqid)
+
+        def get(self, timerid):
+            with self._lock:
+                return self._d.get(timerid, [])
+
     def __init__(self, workers, num_timers=2):
         self._task_queues = []
         self._timers = []
+        self._workers = workers
+        self._reqids = TimersPool.ReqIdsDict()
         for i in range(num_timers):
             tq = queue.Queue()
-            timer = TimerThread(tq, 'Timer-%d' % i, workers)
+            timer = TimerThread(tq, self._reqids, 'Timer-%d' % i, workers)
             
             self._task_queues.append(tq)
             self._timers.append(timer)
@@ -136,7 +152,10 @@ class TimersPool(object):
         chosen_q = self._task_queues[h]
         return chosen_q
 
-    def request(self, task, period):
+    def get_reqids(self, timerid):
+        return self._reqids.get(timerid)
+
+    def schedule(self, task, period):
         """ Add `task` to one of the pool's timers. 
         
             The given `task` will be run every `period` seconds.
@@ -151,8 +170,11 @@ class TimersPool(object):
             raise ValueError("Invalid period (%s). Must be > 0", period)
 
         q = self._get_queue_for(task.name)
-        logger.debug("Submitting periodic request '%s' with period %f s", task, period)
-        q.put((TimerThread.ADD_TASK_TOKEN, (task, period) ))
+
+        timerid = uuid.uuid4()
+        logger.debug("Submitting periodic request '%s' with period '%f's", task, period)
+        q.put((TimerThread.ADD_TASK_TOKEN, (timerid, task, period) ))
+        return timerid
 
     def remove_task(self, taskname):
         q = self._get_queue_for(taskname)
@@ -251,8 +273,8 @@ class WorkersPool(object):
     def num_workers(self):
         return len(self._workers)
 
-    def _submit(self, task):  
-        reqid = uuid.uuid4()
+    def _submit(self, task, reqid=None):
+        reqid = reqid or uuid.uuid4()
         # calculate the hash for the task based on its name
         h = adler32(task.name) % self.num_workers
         chosen_q = self._task_queues[h]
@@ -275,14 +297,14 @@ class WorkersPool(object):
         if not self._stopping:
             # don't accept requests if we are shutting down
             logger.debug("Submitting request '%s'", task)
-            res = self._submit(task)
+            reqid = self._submit(task)
         else: 
             logger.warn("Request for '%s' received while shutting down", task)
-            res = None
+            reqid = None
 
         self._req_lock.release()
         logger.debug("Released request lock for task '%s'", task)
-        return res
+        return reqid 
 
 
     def get_result(self, reqid):
