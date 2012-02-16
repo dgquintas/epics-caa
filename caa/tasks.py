@@ -34,15 +34,15 @@ class Task(object):
         self.name = name
         self.f = f
         self.args = args
-        self.done = False
 
     def __call__(self, state):
         return self.f(state, *self.args)
 
     def __repr__(self):
-        return 'Task-%s<%s(%r)>. Done: %s' % (self.name, self.f.__name__, self.args, self.done)
+        return 'Task-%s<%s(%r)>' % (self.name, self.f.__name__, self.args)
 
 
+TaskResult = collections.namedtuple('TaskResult', 'name, result, timestamp')
 #######################################################
 
 class TimerThread(threading.Thread):
@@ -228,15 +228,12 @@ class Worker(Process):
             logger.debug("Processing task '%s' with id '%s'.Queue size: %d ", task, reqid, self._inq.qsize())
             
             t_res = task(self.state[task.name])  
-            
-
-            task.result = t_res
-            task.done = True
             logger.debug("Task with id '%s' for PV '%s' completed. Result: '%r'", \
-                    reqid, task.name, task.result )
+                    reqid, task.name, t_res )
 
             if t_res:
-                self._out[reqid] = task
+                taskresult = TaskResult(task.name, t_res, time.time()*1e6)
+                self._out[reqid] = taskresult
 
             if not self.state[task.name]:
                 del self.state[task.name]
