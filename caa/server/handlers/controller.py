@@ -85,22 +85,18 @@ class ValuesHandler(BaseHandler):
             self.fail("Error: %s" % e)
 
 
-import cStringIO
 from contextlib import closing
 class ConfigHandler(BaseHandler):
     def get(self):
-        with closing(cStringIO.StringIO()) as f:
-            controller.save_config(f)
-            f.seek(0)
-            self.write(f.read())
+        cfg = controller.save_config()
+        self.write(cfg)
 
     def post(self):
         data = self.request.body
-        with closing(cStringIO.StringIO(data)) as fobj:
-            try:
-                res = [ str(uuid) for uuid in controller.load_config(fobj) ]
-                self.win(res)
-            except Exception as e:
-                self.fail(e)
+        try:
+            res = [ str(uuid) for uuid in controller.load_config(data) ]
+            self.win(res)
+        except Exception as e:
+            self.fail(e)
 
 
