@@ -86,19 +86,21 @@ class ValuesHandler(BaseHandler):
 
 
 import cStringIO
+from contextlib import closing
 class ConfigHandler(BaseHandler):
     def get(self):
-        f = cStringIO.StringIO()
-        controller.save_config(f)
-        f.seek(0)
-        self.write(f.read())
+        with closing(cStringIO.StringIO()) as f:
+            controller.save_config(f)
+            f.seek(0)
+            self.write(f.read())
 
     def post(self):
         data = self.request.body
-        try:
-            res = controller.load_config(data)
-            self.win(res)
-        except Exception as e:
-            self.fail(e)
+        with closing(cStringIO.StringIO(data)) as fobj:
+            try:
+                res = [ str(uuid) for uuid in controller.load_config(fobj) ]
+                self.win(res)
+            except Exception as e:
+                self.fail(e)
 
 
