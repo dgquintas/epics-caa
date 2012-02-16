@@ -94,10 +94,11 @@ def load_config(fileobj):
         Returns a list with the receipts of the restored subscriptions.
     """
     receipts = []
-    for line in fileobj:
-        d_line = json.loads(line)
-        mode_dict = d_line['mode']
-        name = d_line['name']
+    raw = fileobj.read()
+    decoded_l = json.loads(raw)
+    for item in decoded_l:
+        mode_dict = item['mode']
+        name = item['name']
         mode = SubscriptionMode.parse(mode_dict)
         receipt = subscribe(name, mode)
         receipts.append(receipt)
@@ -107,9 +108,11 @@ def save_config(fileobj):
     """ Save current subscription state. """
     # get a list of the ArchivedPV values 
     apvs = get_pvs()
+    raw = []
     for apv in apvs:
         del apv['since']
-        fileobj.write(json.dumps(apv) + '\n', )
+        raw.append(apv)
+    fileobj.write(json.dumps(raw, indent=4))
 
 def shutdown():
     logger.info("Unsubscribing to all subscribed PVs...")

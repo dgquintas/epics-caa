@@ -98,6 +98,8 @@ class ConfigHandler(BaseHandler):
         data = self.request.body
         with closing(cStringIO.StringIO(data)) as fobj:
             try:
+                import pdb
+                pdb.set_trace()
                 res = [ str(uuid) for uuid in controller.load_config(fobj) ]
                 self.win(res)
             except Exception as e:
