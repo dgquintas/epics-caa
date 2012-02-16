@@ -1,7 +1,6 @@
 DATASTORE = {'keyspace':            'caaTest', 
              'servers':             ['localhost:9160', ],
-             'replication_factor':  1,
-             'status_ttl':          2, # in seconds
+             'replication_factor':  2,
 }
 
 CONTROLLER = {'epics_connection_timeout':   0.5, #in seconds
