@@ -23,12 +23,12 @@ import multiprocessing
 from collections import defaultdict
 
 from caa import SubscriptionMode, ArchivedPV
-import caa.config as config
+from caa.conf import settings
 
 logger = logging.getLogger('DataStore')
 
 def _pool_factory():
-    cfg = config.DATASTORE
+    cfg = settings.DATASTORE
     pool = pycassa.pool.ConnectionPool(cfg['keyspace'], cfg['servers'])
     logger.debug("Created connection pool with id '%d' for process '%s'", \
             id(pool), multiprocessing.current_process().name)

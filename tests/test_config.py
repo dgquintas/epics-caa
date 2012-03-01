@@ -1,43 +1,50 @@
 import unittest
-from caa import config
+import os
+
+from caa.conf import settings, ENVIRONMENT_VARIABLE
+
 
 class TestConfig(unittest.TestCase):
-    
+ 
     def setUp(self):
-        self.cfg = config.get_config('config.test.cfg')
+        os.environ[ENVIRONMENT_VARIABLE] = 'settings_test'
 
-    def test_parsing_error(self):
-        import StringIO
-        from contextlib import closing
-        with closing(StringIO.StringIO("{this ain't valid yo")) as f:
-            f.name = "FakeFile"
-            self.assertRaises(ValueError, config._Config, f)
-
-    def test_sections(self):
-        sections = self.cfg.sections
-        for section in sections:
-            sect = getattr(self.cfg, section)
-            self.assertTrue(sect)
-        self.assertRaises(AttributeError, getattr, self.cfg, 'FOOBAR')
+    def tearDown(self):
+        settings.reset()
 
     def test_values(self):
-        datastore = self.cfg.DATASTORE
-        keys = ('keyspace', 'servers', 'replication_factor')
+        directive = settings.DIRECTIVE
+        keys = ('key_to_string', 'key_to_list', 'key_to_dict', 'key_to_int')
         for k in keys:
-            self.assertIn(k, datastore.keys())
+            self.assertIn(k, directive.keys())
 
-        self.assertEqual(datastore['keyspace'], 'caaTest')
+        s = directive['key_to_string']
+        self.assertEqual(s, 'string_value')
 
-        servers = datastore['servers']
-        self.assertIs(type(servers), list)
-        self.assertTrue(len(servers), 2)
-        self.assertIn('localhost:9160', servers) 
-        self.assertIn('localhost:9161', servers) 
+        l = directive['key_to_list']
+        self.assertIs(type(l), list)
+        self.assertTrue(len(l), 2)
+        self.assertIn('listitem1', l) 
+        self.assertIn('listitem2', l) 
 
-        controller = self.cfg.CONTROLLER
-        self.assertIs(type(controller['epics_connection_timeout']), float)
-        self.assertIs(type(controller['num_timers']), int)
+        d = directive['key_to_dict']
+        self.assertEqual(d['foo'], 1)
+        self.assertEqual(d['bar'], 2)
+
+        i = directive['key_to_int']
+        self.assertEqual(i, 42)
+
+        another = settings.ANOTHER_DIR
+        self.assertEqual( another, "still kickin'")
 
 
+    def test_no_envvar(self):
+        del os.environ[ENVIRONMENT_VARIABLE]
+        self.assertRaises(ImportError, getattr, settings, "DATASTORE")
+        
+    def test_diff_settings_file(self):
+        os.environ[ENVIRONMENT_VARIABLE] = 'settings_test_2'
+        foo = settings.FOO
+        self.assertEqual(foo, 'bar')
 
 

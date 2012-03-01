@@ -12,8 +12,6 @@ import time
 import collections
 import logging
 
-import caa.config as config
-
 logger = logging.getLogger('tasks')
 
 class Task(object):

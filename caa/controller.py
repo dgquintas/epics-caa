@@ -6,11 +6,9 @@ import uuid
 import time 
 import fnmatch
 import datetime 
-from caa import ArchivedPV, SubscriptionMode
-
-import datastore
-import caa.config as config
+from caa import ArchivedPV, SubscriptionMode, datastore
 from tasks import Task, TimersPool, WorkersPool
+from caa.conf import settings
 
 import pycassa
 
@@ -18,8 +16,8 @@ logger = logging.getLogger('controller')
 
 #######################################################
 
-workers = WorkersPool(config.CONTROLLER['num_workers'])
-timers = TimersPool(workers, config.CONTROLLER['num_timers'])
+workers = WorkersPool(settings.CONTROLLER['num_workers'])
+timers = TimersPool(workers, settings.CONTROLLER['num_timers'])
 
 
 def subscribe(pvname, mode):
@@ -139,7 +137,8 @@ def shutdown():
     logger.info("Shutdown completed")
 
 def initialize(replication_factor=2, recreate=False):
-    datastore.create_schema(config.DATASTORE['servers'][0], config.DATASTORE['keyspace'], replication_factor, recreate)
+    datastore.create_schema(settings.DATASTORE['servers'][0], settings.DATASTORE['keyspace'],\
+            replication_factor, recreate)
 
 
 ##################### TASKS #######################
@@ -147,7 +146,7 @@ def epics_subscribe(state, pvname, mode):
     """ Function to be run by the worker in order to subscribe """
     import epics
     logger.info("Subscribing to '%s' with mode '%s'", pvname, mode)
-    conn_timeout = config.CONTROLLER['epics_connection_timeout']
+    conn_timeout = settings.CONTROLLER['epics_connection_timeout']
 
     sub_mask = None
     cb = None

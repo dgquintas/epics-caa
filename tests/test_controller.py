@@ -2,12 +2,18 @@ import unittest
 import logging
 import time
 import datetime
+import itertools
 from pprint import pprint
 from collections import defaultdict
 
-from caa import controller, datastore, SubscriptionMode, ArchivedPV, config
+from caa.conf import settings, ENVIRONMENT_VARIABLE
+import os
+os.environ[ENVIRONMENT_VARIABLE] = 'caa.settings_dev'
 
-logging.basicConfig(level=logging.INFO, format='[%(processName)s/%(threadName)s] %(asctime)s %(levelname)s: %(message)s')
+from caa import controller, datastore, SubscriptionMode, ArchivedPV
+
+logging.basicConfig(level=logging.INFO, 
+        format='[%(processName)s/%(threadName)s] %(asctime)s %(levelname)s: %(message)s')
 logger = logging.getLogger('TestController')
 
 NUM_RANDOM_PVS = 10
@@ -25,10 +31,6 @@ def wait_for_reqids(getterf, reqids):
 
 class TestController(unittest.TestCase):
     
-    @classmethod
-    def setUpClass(cls):
-        pass
-
     def setUp(self):
         reload(controller)
         controller.initialize(recreate=True)
@@ -36,11 +38,10 @@ class TestController(unittest.TestCase):
         self.long_pvs = [ 'test:long%d' % i for i in range(1,NUM_RANDOM_PVS) ]
         self.double_pvs = [ 'test:double%d' % i for i in range(1,NUM_RANDOM_PVS) ]
         self.existing_pvs = self.long_pvs + self.double_pvs
-        self.fake_pvs  = ['test:doesntexist']
+        self.fake_pvs  = ['test:doesntexist%d'%i for i in range(5)]
+        self.nonchanging_pvs = [ 'test:long0' ]
 
         self.pvs = self.existing_pvs + self.fake_pvs
-
-        self.timeout = 1
 
     def test_get_status(self):
         reqids = [controller.subscribe(pv, SubscriptionMode.Monitor()) for pv in self.pvs]
@@ -210,6 +211,19 @@ class TestController(unittest.TestCase):
         for pv,p in zip(self.pvs[:4], periods):
             res = controller.get_values(pv)
             self.assertAlmostEqual(sleep_for/p, len(res), delta=1)
+
+    def test_scanning_disconnected_pvs(self):
+        period = 1
+        pvs = itertools.chain(self.fake_pvs)
+        t1 = time.time()
+        reqids = [ controller.subscribe(pv, SubscriptionMode.Scan(period=period)) for pv in pvs ]
+        wait_for_reqids(controller.get_result, reqids)
+    
+        #sleep_for = 10
+        #time.sleep(sleep_for)
+        t2 = time.time()
+ 
+        print(t2-t1)
 
     def test_unsubscribe_monitor(self):
         controller.subscribe(self.long_pvs[0], SubscriptionMode.Monitor())
@@ -396,7 +410,7 @@ class TestController(unittest.TestCase):
 
         controller.shutdown()
         time.sleep(1)
-        datastore.reset_schema(config.DATASTORE['servers'][0], config.DATASTORE['keyspace'])
+        datastore.reset_schema(settings.DATASTORE['servers'][0], settings.DATASTORE['keyspace'])
 
     @classmethod
     def tearDownClass(cls):
