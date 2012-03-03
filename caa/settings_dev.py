@@ -4,7 +4,7 @@ DATASTORE = {'keyspace':            'caaTest',
              'status_ttl':          2, # in seconds
 }
 
-CONTROLLER = {'epics_connection_timeout':   0.5, #in seconds
-              'num_workers':                4,
-              'num_timers':                 2,
+CONTROLLER = {'epics_connection_timeout':   0.1, #in seconds
+              'num_workers':                8,
+              'num_timers':                 4,
 }
