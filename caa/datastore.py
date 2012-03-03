@@ -17,6 +17,7 @@ import logging
 import time
 import itertools
 import json
+import datetime
 import sys
 import fnmatch 
 import multiprocessing
@@ -154,18 +155,23 @@ def reset_schema(server, keyspace, drop=False):
 ############### WRITERS ###########################
 
 def save_update(update_id, pvname, value, **extra):
+    ts_secs = time.time()
+    ts_ms = int(ts_secs * 1e6) 
+    ts_readable = datetime.datetime.fromtimestamp(ts_secs).isoformat(' ')
+
     d = dict( (k, json.dumps(v)) for k,v in extra.iteritems() )
     d.update( {'pvname': json.dumps(pvname), 
                'value': json.dumps(value),
+               'archived_at': json.dumps(ts_readable),
+               'archived_at_ts': json.dumps(ts_secs),
                }
             )
     logger.debug("Saving update '(%s, %s)'", \
             update_id, d)
 
-    ts = int(time.time() * 1e6) 
     _cf('updates').insert(update_id, d)
 
-    _cf('update_timeline').insert(pvname, {ts: update_id})
+    _cf('update_timeline').insert(pvname, {ts_ms: update_id})
 
 
 def save_conn_status(pvname, connected):

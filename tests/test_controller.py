@@ -212,18 +212,33 @@ class TestController(unittest.TestCase):
             res = controller.get_values(pv)
             self.assertAlmostEqual(sleep_for/p, len(res), delta=1)
 
-    def test_scanning_disconnected_pvs(self):
-        period = 1
-        pvs = itertools.chain(self.fake_pvs)
-        t1 = time.time()
-        reqids = [ controller.subscribe(pv, SubscriptionMode.Scan(period=period)) for pv in pvs ]
-        wait_for_reqids(controller.get_result, reqids)
-    
-        #sleep_for = 10
-        #time.sleep(sleep_for)
-        t2 = time.time()
- 
-        print(t2-t1)
+#    def test_scanning_disconnected_pvs(self):
+#        period = 1
+#        pvs = itertools.chain(self.fake_pvs)
+#        t1 = time.time()
+#        reqids = [ controller.subscribe(pv, SubscriptionMode.Scan(period=period)) for pv in pvs ]
+#        wait_for_reqids(controller.get_result, reqids)
+#    
+#        #sleep_for = 10
+#        #time.sleep(sleep_for)
+#        t2 = time.time()
+# 
+#        print(t2-t1)
+
+    def test_constant_value_scan(self):
+        pv = self.nonchanging_pvs[0]
+        controller.subscribe(pv, SubscriptionMode.Scan(period=1))
+
+        time.sleep(4)
+
+        values = controller.get_values(self.nonchanging_pvs[0])
+        self.assertGreaterEqual(len(values), 3)
+        self.assertLessEqual(len(values), 4)
+        last_value = values[-1] # ie, oldest
+        for i,value in enumerate(reversed(values[:-1])):
+            self.assertAlmostEqual(value['archived_at_ts']-i-1, last_value['archived_at_ts'], delta=0.1)
+            self.assertEqual(value['timestamp'], last_value['timestamp'])
+        
 
     def test_unsubscribe_monitor(self):
         controller.subscribe(self.long_pvs[0], SubscriptionMode.Monitor())

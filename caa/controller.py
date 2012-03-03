@@ -190,7 +190,7 @@ def epics_periodic(state, pvname, period):
     # get the pv's value
     pv = state.get('pv')
     if pv:
-        if pv.status == 1: # connected
+        if pv.status == 1: # connected. This will block for CONTROLLER.epics_connection_timeout if not connected
             #generate the id for the update
             update_id = uuid.uuid1()
             data = _gather_pv_data(pv)
