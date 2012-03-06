@@ -9,10 +9,6 @@
 import pycassa
 from pycassa.cassandra.ttypes import NotFoundException
 
-try:
-    from collections import namedtuple 
-except ImportError:
-    from caa.utils.namedtuple import namedtuple
 import logging
 import time
 import itertools
@@ -56,6 +52,10 @@ def _cf(cfname):
         cfs_for_proc[cfname] = _cf_factory(cfname)
     return cfs_for_proc[cfname]
 
+def _get_timestamp_ms():
+    ts = int(time.time() * 1e6)
+    return ts
+
 class DataStoreError(Exception):
     pass
 
@@ -87,13 +87,14 @@ def create_schema(server, keyspace, replication_factor=1, recreate=False):
 
         # statuses: 
         #   pvname: {
-        #       'connected': boolean
+        #       ts: boolean
         #   }
+        #
+        # for each pv, the boolean signals the new connection status acquired at "ts"
         sm.create_column_family(keyspace, 'statuses', 
-                comparator_type=pycassa.UTF8_TYPE, 
-                default_validation_class=pycassa.UTF8_TYPE, 
-                key_validation_class=pycassa.UTF8_TYPE)
-        sm.alter_column(keyspace, 'statuses', 'connected', pycassa.BOOLEAN_TYPE)
+                comparator_type=pycassa.LONG_TYPE,      # column name type
+                default_validation_class=pycassa.BOOLEAN_TYPE, # column value type
+                key_validation_class=pycassa.UTF8_TYPE) # row type
 
         # pvs: {
         #   pvname: {
@@ -155,15 +156,14 @@ def reset_schema(server, keyspace, drop=False):
 ############### WRITERS ###########################
 
 def save_update(update_id, pvname, value, **extra):
-    ts_secs = time.time()
-    ts_ms = int(ts_secs * 1e6) 
-    ts_readable = datetime.datetime.fromtimestamp(ts_secs).isoformat(' ')
+    ts_ms = _get_timestamp_ms()
+    ts_readable = datetime.datetime.fromtimestamp(time.time()).isoformat(' ')
 
     d = dict( (k, json.dumps(v)) for k,v in extra.iteritems() )
     d.update( {'pvname': json.dumps(pvname), 
                'value': json.dumps(value),
                'archived_at': json.dumps(ts_readable),
-               'archived_at_ts': json.dumps(ts_secs),
+               'archived_at_ts': json.dumps(ts_ms),
                }
             )
     logger.debug("Saving update '(%s, %s)'", \
@@ -175,7 +175,8 @@ def save_update(update_id, pvname, value, **extra):
 
 
 def save_conn_status(pvname, connected):
-    d = {'connected': connected}
+    ts = _get_timestamp_ms() 
+    d = {ts: connected}
     logger.debug("Updating connection status for '%s' to '%s'", pvname, connected)
     _cf('statuses').insert(pvname, d)
 
@@ -187,7 +188,7 @@ def save_pv(pvname, mode):
         :param mode: An instance of one of the inner classes of 
         :class:`SubscriptionMode` 
     """
-    ts = int(time.time() * 1e6) 
+    ts = _get_timestamp_ms() 
     d = {'since': ts} 
 
     # for each of the mode values, ensure it's 
@@ -222,13 +223,21 @@ def read_pv(pvname):
         return None
     return apv
 
-def read_status(pvname):
+def read_status(pvname, limit, ini, end):
+
+    ts_ini = ini and time.mktime(ini.timetuple()) * 1e6 or ''
+    ts_end = end and time.mktime(end.timetuple()) * 1e6 or ''
+    
+
     try:
-        res = _cf('statuses').get(pvname)
+        statuses = _cf('statuses').get(pvname, \
+                column_count=limit, column_reversed=True, \
+                column_start=ts_end, column_finish=ts_ini)
+        res = [(ts, status) for ts,status in statuses.iteritems()]
     except pycassa.NotFoundException:
-        res = {}
-    finally:
-        return res
+        res = []
+
+    return res
 
 def list_pvs(pvname_pattern, modename_pattern):
     """ Returns an iterator over the list of PV's matching the modes in 

@@ -1,9 +1,9 @@
+import pdb
 import unittest
 import logging
 import time
 import datetime
 import itertools
-from pprint import pprint
 from collections import defaultdict
 
 from caa.conf import settings, ENVIRONMENT_VARIABLE
@@ -29,8 +29,21 @@ def wait_for_reqids(getterf, reqids):
             time.sleep(0.1)
     return res
 
+def _block_ioc(block):
+    if block:
+        print("Blocking IOC via iptables")
+        action = '-A'
+    else:
+        print("Unblocking IOC via iptables")
+        action = '-D'
+    return os.system('sudo -A iptables %s OUTPUT -p tcp --sport 5064 -j REJECT' % action)
+
 class TestController(unittest.TestCase):
-    
+ 
+    @classmethod
+    def setUpClass(cls):
+        _block_ioc(False)
+
     def setUp(self):
         reload(controller)
         controller.initialize(recreate=True)
@@ -43,20 +56,39 @@ class TestController(unittest.TestCase):
 
         self.pvs = self.existing_pvs + self.fake_pvs
 
-    def test_get_status(self):
+    def test_get_statuses(self):
+        # connect
         reqids = [controller.subscribe(pv, SubscriptionMode.Monitor()) for pv in self.pvs]
-        results = wait_for_reqids(controller.get_result, reqids)
+        wait_for_reqids(controller.get_result, reqids)
+        
+        conn_ts = datastore._get_timestamp_ms()
+        # 1st status from initial connection => true
+        #
+        self.assertEqual(_block_ioc(True), 0)
+        time.sleep(40)
+        # 2nd status after disconnection from timeout => false
+        #
+        self.assertEqual(_block_ioc(False), 0)
+        # 3rd status after unblocking IOC, reconnection => true
+        time.sleep(2)
 
-        self.assertEqual( len(results), len(self.pvs) )
 
         for pv in self.existing_pvs: 
-            status = controller.get_status(pv)
-            self.assertTrue(status)
-            self.assertTrue(status['connected'], "Failed for %s" % pv)
+            statuses = controller.get_statuses(pv, limit=3)
+            self.assertTrue(statuses)
+            self.assertTrue(len(statuses), 3)
 
+            [reconn, disconn, conn] = statuses
+
+            self.assertTrue(conn.connected)
+            self.assertLess( (conn.timestamp - conn_ts)/1e6, 0.5 )
+
+            self.assertFalse(disconn.connected)
+            self.assertTrue(reconn.connected)
+            
         for fakepv in self.fake_pvs:
-            status = controller.get_status(fakepv)
-            self.assertEqual(status, {})
+            statuses = controller.get_statuses(fakepv)
+            self.assertEqual(statuses, [])
 
     def test_get_values(self):
         self.test_subscribe()
@@ -182,6 +214,49 @@ class TestController(unittest.TestCase):
             values = controller.get_values(fakepv)
             self.assertEqual([], values)
 
+    def test_get_values_disconnected(self):
+        conn_ts = datastore._get_timestamp_ms()
+        reqids = [ controller.subscribe(pv, SubscriptionMode.Monitor()) \
+                for pv in self.existing_pvs ]
+        results = wait_for_reqids(controller.get_result, reqids)
+        time.sleep(2)
+        # when a pv gets disconnected, NaN should be stored as its value. 
+        # moreover, the pv's status should reflect the disconnection at that
+        # point in time
+        for pv in self.existing_pvs:
+            statuses = controller.get_statuses(pv)
+            self.assertTrue(statuses)
+            status = statuses[0]
+            self.assertTrue(status.connected)
+
+            last_values = controller.get_values(pv)
+            self.assertTrue(last_values)
+            last_value = last_values[0]
+            self.assertGreater(last_value['archived_at_ts'], conn_ts)
+            self.assertGreater(last_value['value'], 1)
+
+
+        predisconn_ts = datastore._get_timestamp_ms()
+        _block_ioc(True)
+        time.sleep(35)
+        postdisconn_ts = datastore._get_timestamp_ms()
+
+        for pv in self.existing_pvs:
+            statuses = controller.get_statuses(pv)
+            self.assertTrue(statuses)
+            status = statuses[0]
+            self.assertFalse(status.connected)
+
+            last_values = controller.get_values(pv)
+            self.assertTrue(last_values)
+            last_value = last_values[0]
+            self.assertGreater(last_value['archived_at_ts'], predisconn_ts)
+            self.assertGreater(postdisconn_ts, last_value['archived_at_ts'])
+            self.assertIsNone(last_value['value'])
+
+        _block_ioc(False)
+
+
     def test_subscribe(self, mode=SubscriptionMode.Monitor()):
         reqids = [ controller.subscribe(pv, mode) for pv in self.pvs ]
         results = wait_for_reqids(controller.get_result, reqids)
@@ -212,19 +287,6 @@ class TestController(unittest.TestCase):
             res = controller.get_values(pv)
             self.assertAlmostEqual(sleep_for/p, len(res), delta=1)
 
-#    def test_scanning_disconnected_pvs(self):
-#        period = 1
-#        pvs = itertools.chain(self.fake_pvs)
-#        t1 = time.time()
-#        reqids = [ controller.subscribe(pv, SubscriptionMode.Scan(period=period)) for pv in pvs ]
-#        wait_for_reqids(controller.get_result, reqids)
-#    
-#        #sleep_for = 10
-#        #time.sleep(sleep_for)
-#        t2 = time.time()
-# 
-#        print(t2-t1)
-
     def test_constant_value_scan(self):
         pv = self.nonchanging_pvs[0]
         controller.subscribe(pv, SubscriptionMode.Scan(period=1))
@@ -236,7 +298,7 @@ class TestController(unittest.TestCase):
         self.assertLessEqual(len(values), 4)
         last_value = values[-1] # ie, oldest
         for i,value in enumerate(reversed(values[:-1])):
-            self.assertAlmostEqual(value['archived_at_ts']-i-1, last_value['archived_at_ts'], delta=0.1)
+            self.assertAlmostEqual(value['archived_at_ts']-(i+1)*1e6, last_value['archived_at_ts'], delta=0.1*1e6)
             self.assertEqual(value['timestamp'], last_value['timestamp'])
         
 
@@ -424,12 +486,11 @@ class TestController(unittest.TestCase):
             pass
 
         controller.shutdown()
-        time.sleep(1)
-        datastore.reset_schema(settings.DATASTORE['servers'][0], settings.DATASTORE['keyspace'])
+        #datastore.reset_schema(settings.DATASTORE['servers'][0], settings.DATASTORE['keyspace'])
 
     @classmethod
     def tearDownClass(cls):
-        pass
+        _block_ioc(False)
 
 
 

@@ -6,6 +6,11 @@ import uuid
 import time 
 import fnmatch
 import datetime 
+try:
+    from collections import namedtuple 
+except ImportError:
+    from caa.utils.namedtuple import namedtuple
+
 from caa import ArchivedPV, SubscriptionMode, datastore
 from tasks import Task, TimersPool, WorkersPool
 from caa.conf import settings
@@ -74,9 +79,15 @@ def get_info(pvname):
     """
     return datastore.read_pv(pvname) 
 
-def get_status(pvname):
-    """ Returns the status dictionary for the given PV.  """
-    return datastore.read_status(pvname)
+PVStatus = namedtuple('PVStatus', 'timestamp, connected')
+def get_statuses(pvname, limit=10):
+    """ Returns the ``limit`` latest connection status for the given PV.
+    
+        The returned list is sorted, starting with the most recent.
+    """
+    sts = datastore.read_status(pvname, limit=limit, ini=None, end=None)
+    res = [PVStatus(*st) for st in sts] 
+    return res
 
 def get_values(pvname, fields=[], limit=100, from_date=None, to_date=None):
     """ Returns latest archived data for the PV as a list with at most ``limit`` elements """
@@ -248,6 +259,10 @@ def connection_cb(pvname, conn, **kw):
     logger.debug("PV '%s' connected: %s", pvname, conn)
     
     datastore.save_conn_status(pvname, conn)
+    if not conn:
+        # save PV data with PV value as None/null
+        update_id = uuid.uuid1()
+        datastore.save_update(update_id, pvname=pvname, value=None) 
 
 def _gather_pv_data(pv):
     to_consider = ('pvname', 'value', 'count', 'type', 'status', 'precision', 'units', 'severity', \
