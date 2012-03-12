@@ -21,6 +21,7 @@ from collections import defaultdict
 
 from caa import SubscriptionMode, ArchivedPV
 from caa.conf import settings
+import caa.utils as utils
 
 logger = logging.getLogger('DataStore')
 
@@ -74,10 +75,10 @@ def create_schema(server, keyspace, replication_factor=1, recreate=False):
         # remove all PVs from the DB
         # Used to cleanup after an execution terminates
         # without cleaning after itself (ie, after a crash)
-        logger.debug("Performing _cleanup")
-        apvs = list_pvs('*', '*')
-        for apv in apvs:
-            remove_pv(apv.name)
+        logger.debug("Performing cleanup")
+
+        allpvs = list_pvs()
+        remove_pvs(allpvs)
     else: # keyspace doesn't exist. Create it
         #create it
         sm.create_keyspace(keyspace, 
@@ -180,55 +181,69 @@ def save_conn_status(pvname, connected):
     logger.debug("Updating connection status for '%s' to '%s'", pvname, connected)
     _cf('statuses').insert(pvname, d)
 
-def save_pv(pvname, mode):
+def save_pvs(pvnames, modes):
     """ 
-        Register the given PV with the system. 
+        Register the given PVs with the system. 
 
-        :param pvname: Name of the PV being persisted
-        :param mode: An instance of one of the inner classes of 
-        :class:`SubscriptionMode` 
+        :param pvnames: Collection of PV names.
+        :param modes: Collection of the corresponding subscription modes, 
+        instances of :class:`SubscriptionMode` 
     """
-    ts = _get_timestamp_ms() 
-    d = {'since': ts} 
+    if len(pvnames) != len(modes):
+        raise ValueError("Argument sizes don't match")
 
-    # for each of the mode values, ensure it's 
-    # in str form 
-    mode_jsoned = dict( (k, json.dumps(v)) for k,v in mode.iteritems() ) 
-    d.update(mode_jsoned)
+    b = _cf('pvs').batch()
 
-    logger.debug("Saving pv subscription '(%s, %s)'", pvname, d)
+    for pvname,mode in zip(pvnames, modes):
+        ts = _get_timestamp_ms() 
+        d = {'since': ts} 
 
-    _cf('pvs').insert(pvname, d)
+        # for each of the mode values, ensure it's 
+        # in str form 
+        mode_jsoned = dict( (k, json.dumps(v)) for k,v in mode.iteritems() ) 
+        d.update(mode_jsoned)
+
+        logger.debug("Saving pv subscription '(%s, %s)'", pvname, d)
+
+        b.insert(pvname, d)
+    b.send()
+
 
 
 ###### REMOVERS ######################
-def remove_pv(pvname):
-    logger.debug("Removing PV '%s'", pvname)
-    _cf('pvs').remove(pvname) 
-
+def remove_pvs(pvnames):
+    if not utils.is_non_str_iterable(pvnames):
+        raise TypeError("The argument isn't a collection of PV names")
+    b = _cf('pvs').batch()
+    for pvname in pvnames:
+        logger.info("Removing PV '%s'", pvname)
+        b.remove(pvname)
+    b.send()
 
 ############### READERS ###########################
-def read_pv(pvname):
-    try:
-        cols = _cf('pvs').get(pvname)
-        
-        since =  cols.pop('since')
-        
-        # cols's remaining values (mode as a dict) are json'd 
-        mode_dict = dict( (k, json.loads(v)) for k,v in cols.iteritems() )
-        mode = SubscriptionMode.parse(mode_dict)
 
-        apv = ArchivedPV(pvname, mode, since)
-    except NotFoundException:
-        return None
-    return apv
+#XXX: right now, get_indexed_slices and get_range return all columns
+# there doesnt seem to be a way to not return any column. Instead of
+# picking an arbitrary column 
+def list_pvs(namepattern, modename):
+    if modename:
+        jsoned_mode_name = json.dumps(modename)
+        expr = pycassa.index.create_index_expression('mode', jsoned_mode_name)
+        cls = pycassa.index.create_index_clause([expr], count=2**31)
+        rowsgen = _cf('pvs').get_indexed_slices(cls)
+    else:
+        rowsgen = _cf('pvs').get_range()
+
+    # filter by name
+    if namepattern:
+        return ( pvname for pvname, _ in rowsgen if fnmatch.fnmatch(pvname, namepattern) )
+    else:
+        return ( pvname for pvname, _ in rowsgen )
 
 def read_status(pvname, limit, ini, end):
-
     ts_ini = ini and time.mktime(ini.timetuple()) * 1e6 or ''
     ts_end = end and time.mktime(end.timetuple()) * 1e6 or ''
     
-
     try:
         statuses = _cf('statuses').get(pvname, \
                 column_count=limit, column_reversed=True, \
@@ -239,32 +254,21 @@ def read_status(pvname, limit, ini, end):
 
     return res
 
-def list_pvs(pvname_pattern, modename_pattern):
-    """ Returns an iterator over the list of PV's matching the modes in 
-        the ``modes`` list. 
-        If ``modes`` isn't specified, return all known PV's
-    """
-    res = iter([])
-    available_mode_names = [m.name for m in SubscriptionMode.available_modes]
-    for mname in fnmatch.filter(available_mode_names, modename_pattern):
-        jsoned_mode_name = json.dumps(mname)
-        expr = pycassa.index.create_index_expression('mode', jsoned_mode_name)
-        cls = pycassa.index.create_index_clause([expr], count=2**31)
-        res = itertools.chain(res, _cf('pvs').get_indexed_slices(cls))
-    def APVGen():
-        for pv in res:
-            pvname, pvinfo = pv
-            if not fnmatch.fnmatchcase(pvname, pvname_pattern):
-                continue
+def read_pvs(pvnames):
+    if not utils.is_non_str_iterable(pvnames):
+        raise TypeError("The argument isn't a collection of PV names")
 
-            since = pvinfo.pop('since') 
-            
-            mode_dict = dict( (k, json.loads(v)) for k,v in pvinfo.iteritems() )
-            mode = SubscriptionMode.parse(mode_dict)
-            apv = ArchivedPV(pvname, mode, since)
-            yield apv
-    return APVGen()
+    def _parse(pvname, cols):
+        since = cols.pop('since')
+        # cols's remaining values (mode as a dict) are json'd 
+        mode_dict = dict( (k, json.loads(v)) for k,v in cols.iteritems() )
+        mode = SubscriptionMode.parse(mode_dict)
+        return ArchivedPV(pvname, mode, since)
 
+    pvrows = _cf('pvs').multiget(pvnames)
+    pvs = dict( (pvname, _parse(pvname, cols)) \
+            for pvname, cols in pvrows.iteritems() )
+    return pvs 
 
 def read_values(pvname, fields, limit, ini, end):
     """ Returns a list of at most `limit` elements (dicts) for `pvname` from
@@ -291,6 +295,8 @@ def read_values(pvname, fields, limit, ini, end):
         return []
     res = _join_timeline_with_updates(timeline, fields)
     return res
+
+##########################################################
 
 def _join_timeline_with_updates(timeline, fields):
     # timeline is a dict of the form (timestamp, update_id)...

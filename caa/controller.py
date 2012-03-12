@@ -6,6 +6,7 @@ import uuid
 import time 
 import fnmatch
 import datetime 
+import collections
 try:
     from collections import namedtuple 
 except ImportError:
@@ -24,45 +25,42 @@ logger = logging.getLogger('controller')
 workers = WorkersPool(settings.CONTROLLER['num_workers'])
 timers = TimersPool(workers, settings.CONTROLLER['num_timers'])
 
-
 def subscribe(pvname, mode):
-    """ Requests subscription to ``pvname`` with mode ``mode``.
-        
-        Returns a unique ID for the request.
+    res = msubscribe( (pvname, ), (mode, ))
+    return res[0] if res else None
 
-        :param mode: Subclass of :class:`SubscriptionMode`.
+def msubscribe(pvnames, modes):
+    datastore.save_pvs(pvnames, modes)
 
-    """
-    pv = get_info(pvname)
-    if not pv:
-        datastore.save_pv(pvname, mode)
-
+    receipts = []
+    for pvname, mode in zip(pvnames, modes) :
         task = Task(pvname, epics_subscribe, pvname, mode)
-        receipt = workers.request(task)
+        receipts.append(workers.request(task))
         if mode.name == SubscriptionMode.Scan.name:
             # in addition, add it to the timer so that it gets scanned
             # periodically
             periodic_task = Task(pvname, epics_periodic, pvname, mode.period)
+            # FIXME: add receipt from timers.schedule to the receipts
+            # array. In such a way that'll allow us to differentiate
+            # the fact that it's a timer's receipt, not a punctual
+            # task's
             timers.schedule(periodic_task, mode.period)
 
-        return receipt
-    else:
-        msg = "Already subscribed to PV '%s'" % pv.name
-        logger.warn(msg)
-        raise ValueError(msg)
+    return receipts
 
-def unsubscribe(pvname_pattern):
-    """ Stops archiving the PVs that match the given pattern. 
-    
-        Returns a the request ids for all the generated tasks.
-    """
-    known_apvs = get_pvs(pvname_pattern)
+
+def unsubscribe(pvname):
+    res = munsubscribe( (pvname, ) )
+    return res[0] if res else None
+
+def munsubscribe(pvnames):
     reqids = []
-    for apv in known_apvs:
-        datastore.remove_pv(apv.name)
-        task = Task(apv.name , epics_unsubscribe, apv.name)
+    pvs_dict = get_pvs(pvnames)
+    datastore.remove_pvs(pvs_dict.iterkeys())
+    for pvname, apv in pvs_dict.iteritems():
+        task = Task(pvname, epics_unsubscribe, pvname)
 
-        if isinstance(apv.mode, SubscriptionMode.Scan):
+        if apv.mode.mode == SubscriptionMode.Scan.name:
             # cancel timers 
             timers.remove_task(task.name)
 
@@ -71,13 +69,6 @@ def unsubscribe(pvname_pattern):
 
 def get_result(reqid):
     return workers.get_result(reqid)
-
-def get_info(pvname):
-    """ Returns an :class:`ArchivedPV` representing the PV. 
-
-        If there's no subscription to that PV, ``None`` is returned.
-    """
-    return datastore.read_pv(pvname) 
 
 PVStatus = namedtuple('PVStatus', 'timestamp, connected')
 def get_statuses(pvname, limit=10):
@@ -93,9 +84,17 @@ def get_values(pvname, fields=[], limit=100, from_date=None, to_date=None):
     """ Returns latest archived data for the PV as a list with at most ``limit`` elements """
     return datastore.read_values(pvname, fields, limit, from_date, to_date)
 
-def get_pvs(pvname_pattern='*', modename_pattern='*'):
-    """ Returns an iterator over the PVs known by the archiver in :class:`ArchivedPV` form """
-    return datastore.list_pvs(pvname_pattern, modename_pattern)
+def get_pv(pvname):
+    return get_pvs([pvname]).get(pvname)
+
+def get_pvs(pvnames):
+    return datastore.read_pvs(pvnames)
+
+def list_pvs(namepattern=None, modename=None):
+    return datastore.list_pvs(namepattern, modename)
+    
+
+############################
 
 def load_config(configstr):
     """ Restore the state defined by the config.
@@ -123,7 +122,8 @@ def save_config():
 
     with closing(cStringIO.StringIO()) as out:
         # get a list of the ArchivedPV values 
-        apvs = get_pvs()
+        all_pv_names = list_pvs()
+        apvs = get_pvs(all_pv_names).itervalues()
         raw = []
         for apv in apvs:
             del apv['since']
@@ -137,7 +137,9 @@ def save_config():
 
 def shutdown():
     logger.info("Unsubscribing to all subscribed PVs...")
-    unsubscribe('*')
+
+    all_pvs = list_pvs()
+    munsubscribe(all_pvs)
 
     if workers.running:
         workers.stop()
@@ -189,7 +191,6 @@ def epics_unsubscribe(state, pvname):
     pv.disconnect()
     del state['pv']
 
-    datastore.remove_pv(pvname)
     return True # needed to signal that the subscription req has been completed.
                 # for example, to be able to sync on controller.get_result 
 

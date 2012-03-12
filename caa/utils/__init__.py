@@ -1,5 +1,6 @@
-# from django.utils.functional
+import collections
 
+# from django.utils.functional
 empty = object()
 def new_method_proxy(func):
     def inner(self, *args):
@@ -55,4 +56,10 @@ class LazyObject(object):
     __members__ = property(lambda self: self.__dir__())
     __dir__ = new_method_proxy(dir)
 
+#######################################################
 
+def names(iterable):
+    return ( i.name for i in iterable )
+
+def is_non_str_iterable(c):
+    return isinstance(c, collections.Iterable) and not isinstance(c, str)

@@ -1,5 +1,6 @@
 import pdb
 import unittest
+import random
 import logging
 import time
 import datetime
@@ -7,6 +8,8 @@ import itertools
 from collections import defaultdict
 
 from caa.conf import settings, ENVIRONMENT_VARIABLE
+from caa.utils import names
+
 import os
 os.environ[ENVIRONMENT_VARIABLE] = 'caa.settings_dev'
 
@@ -257,13 +260,14 @@ class TestController(unittest.TestCase):
         _block_ioc(False)
 
 
-    def test_subscribe(self, mode=SubscriptionMode.Monitor()):
+    def test_subscribe(self, mode = None):
+        mode = mode or SubscriptionMode.Monitor()
         reqids = [ controller.subscribe(pv, mode) for pv in self.pvs ]
         results = wait_for_reqids(controller.get_result, reqids)
         
-        apvs = [ controller.get_info(pv) for pv in self.pvs ]
-        for apv in apvs:
-            self.assertIn(apv.name, self.pvs)
+        pvs_dict = controller.get_pvs(self.pvs)
+        for pv in self.pvs:
+            self.assertIn(pv, pvs_dict)
 
         pvnames_from_receipts = [ task.name for task in results ]
         for pv in self.pvs:
@@ -271,6 +275,38 @@ class TestController(unittest.TestCase):
 
         for task in results:
             self.assertTrue(task.result)
+
+
+    def test_msubscribe(self ):
+        mode_choices = [SubscriptionMode.Monitor(), SubscriptionMode.Scan(period=1)]
+        modes = [random.choice(mode_choices) for _ in self.pvs]
+        reqids = controller.msubscribe( self.pvs, modes )
+
+        results = wait_for_reqids(controller.get_result, reqids)
+        
+        pvs_dict = controller.get_pvs(self.pvs)
+        for pv in self.pvs:
+            self.assertIn(pv, pvs_dict)
+
+        pvnames_from_receipts = [ task.name for task in results ]
+        for pv in self.pvs:
+            self.assertIn(pv, pvnames_from_receipts)
+
+        for task in results:
+            self.assertTrue(task.result)
+
+
+
+    def test_subscribe_resubscribe(self):
+        # subscribe to an already subscribed pv, with a different mode perhaps
+        pv = self.long_pvs[0]
+        controller.subscribe(pv, SubscriptionMode.Scan(period=1))
+        apv = controller.get_pv(pv)
+        self.assertEqual( apv.mode.period, 1)
+
+        controller.subscribe(pv, SubscriptionMode.Scan(period=2))
+        apv = controller.get_pv(pv)
+        self.assertEqual( apv.mode.period, 2)
 
     def test_subscribe_scan(self):
         for pv in self.pvs[:4]:
@@ -303,10 +339,11 @@ class TestController(unittest.TestCase):
         
 
     def test_unsubscribe_monitor(self):
-        controller.subscribe(self.long_pvs[0], SubscriptionMode.Monitor())
+        pvname = self.long_pvs[0]
+        controller.subscribe(pvname, SubscriptionMode.Monitor())
 
         #check that the system has registered the subscription
-        apv = controller.get_info(self.long_pvs[0])
+        apv = controller.get_pv(pvname)
         self.assertEqual( apv.name, self.long_pvs[0] )
 
         # wait for a while so that we gather some data 
@@ -318,8 +355,8 @@ class TestController(unittest.TestCase):
         before = controller.get_values(self.long_pvs[0])
 
         # verify that the system has removed the pv
-        info = controller.get_info(self.long_pvs[0])
-        self.assertEqual(None, info)
+        apv = controller.get_pv(self.long_pvs[0])
+        self.assertEqual(None, apv)
 
         # wait to see if we are still receiving data 
         time.sleep(2)
@@ -328,14 +365,32 @@ class TestController(unittest.TestCase):
         # we shouldn't have received any data during the last sleep period
         self.assertEqual(len(before), len(after))
 
-    def test_unsubscribe_unknown(self):
-        self.assertEqual([], controller.unsubscribe('foobar'))
+    def test_unsubscribe_misc(self):
+        # unsubscribe from an unknown pv
+        self.assertFalse(controller.unsubscribe('foobar'))
+
+    def test_munsubscribe(self):
+        controller.subscribe('DEFAULT.PV', SubscriptionMode.Monitor())
+        controller.subscribe('FOO.PV', SubscriptionMode.Monitor(delta=0.123))
+        controller.subscribe('BAR.PV', SubscriptionMode.Scan(period=123.1) )
+        
+        pvs = list(controller.list_pvs())
+        self.assertEqual( sorted(pvs), ['BAR.PV', 'DEFAULT.PV', 'FOO.PV'])
+
+        reqids = controller.munsubscribe(pvs)
+        wait_for_reqids(controller.get_result, reqids)
+        
+        pvs = list(controller.list_pvs())
+        self.assertEqual(pvs, [])
+
+        # munsubscribe providing the wrong type or argument (not a sequence)
+        self.assertRaises(TypeError, controller.munsubscribe, 'foobar')
 
     def test_unsubscribe_scan(self):
         controller.subscribe(self.long_pvs[0], SubscriptionMode.Scan(period=1))
 
         #check that the system has registered the subscription
-        apv = controller.get_info(self.long_pvs[0])
+        apv = controller.get_pv(self.long_pvs[0])
         self.assertEqual( apv.name, self.long_pvs[0] )
 
         # wait for a while so that we gather some data 
@@ -346,8 +401,8 @@ class TestController(unittest.TestCase):
         before = controller.get_values(self.long_pvs[0])
 
         # verify that the system has removed the pv
-        info = controller.get_info(self.long_pvs[0])
-        self.assertEqual(None, info)
+        apv = controller.get_pv(self.long_pvs[0])
+        self.assertEqual(None, apv)
 
         # wait to see if we are still receiving data 
         time.sleep(3)
@@ -359,28 +414,103 @@ class TestController(unittest.TestCase):
         # and the scan task's timer should have been cleaned up
         self.assertEqual(controller.timers.num_active_tasks, 0)
 
-
-    def test_get_info(self):
+    def test_list_pvs_simple(self):
         controller.subscribe('DEFAULT.PV', SubscriptionMode.Monitor())
-        apv = controller.get_info('DEFAULT.PV')
-        self.assertEqual( apv.name, 'DEFAULT.PV' )
-        self.assertEqual( apv.mode.name, SubscriptionMode.Monitor.name )
-        self.assertEqual( apv.mode.delta, 0.0 )
-
         controller.subscribe('FOO.PV', SubscriptionMode.Monitor(delta=0.123))
-        apv = controller.get_info('FOO.PV')
-        self.assertEqual( apv.name, 'FOO.PV' )
-        self.assertEqual( apv.mode.name, SubscriptionMode.Monitor.name )
-        self.assertEqual( apv.mode.delta, 0.123 )
-
         controller.subscribe('BAR.PV', SubscriptionMode.Scan(period=123.1) )
-        apv = controller.get_info('BAR.PV')
-        self.assertEqual( apv.name, 'BAR.PV' )
-        self.assertEqual( apv.mode.name , SubscriptionMode.Scan.name )
-        self.assertEqual( apv.mode.period, 123.1 )
+        
+        pvs = controller.list_pvs()
+        self.assertEqual( sorted(pvs), ['BAR.PV', 'DEFAULT.PV', 'FOO.PV'])
 
-        info = controller.get_info('whatever')
-        self.assertEqual(None, info)
+        dotpv_pvs = controller.get_pvs(controller.list_pvs('*.PV'))
+        self.assertEqual( sorted(dotpv_pvs), ['BAR.PV', 'DEFAULT.PV', 'FOO.PV'])
+
+        threeletter_pvs = controller.get_pvs(controller.list_pvs('???.PV'))
+        self.assertEqual( sorted(threeletter_pvs), ['BAR.PV', 'FOO.PV'])
+
+        scan_pvs = controller.get_pvs(controller.list_pvs(modename=SubscriptionMode.Scan.name))
+        self.assertEqual( sorted(scan_pvs), ['BAR.PV'])
+
+        monitor_pvs = controller.get_pvs(controller.list_pvs(modename=SubscriptionMode.Monitor.name))
+        self.assertEqual( sorted(monitor_pvs), ['DEFAULT.PV', 'FOO.PV'])
+    
+    def test_list_and_get_pvs(self):
+        monitor_mode = SubscriptionMode.Monitor()
+        scan_mode = SubscriptionMode.Scan(period=1)
+        now_ts = time.time() * 1e6
+        num_pvs = len(self.pvs)
+        half = num_pvs // 2
+
+        monitored_pvs = self.pvs[:half]
+        scanned_pvs = self.pvs[half:]
+        receipts = [ controller.subscribe(pv, monitor_mode) for pv in monitored_pvs ]
+        receipts += [ controller.subscribe(pv, scan_mode) for pv in scanned_pvs ]
+
+        wait_for_reqids(controller.get_result, receipts)
+            
+        time.sleep(5)
+    
+        pvs_dict = controller.get_pvs(controller.list_pvs())
+
+        for pv in self.pvs:
+            self.assertIn(pv, pvs_dict)
+            self.assertEqual( pvs_dict[pv].name, pv )
+
+            if pv in monitored_pvs:
+                self.assertEqual( pvs_dict[pv].mode.mode, monitor_mode.name )
+            if pv in scanned_pvs:
+                self.assertEqual( pvs_dict[pv].mode.mode,scan_mode.name )
+            
+            self.assertAlmostEqual(now_ts, pvs_dict[pv].since, delta=10e6)
+
+        longpvnames = controller.list_pvs('*long*')
+        longpvs = controller.get_pvs( longpvnames )
+        for pv in longpvs:
+            self.assertRegexpMatches(pv, '.*long.*')
+            self.assertRegexpMatches(longpvs[pv].name, '.*long.*')
+        
+        scanpvnames = controller.list_pvs(modename=scan_mode.name)
+        scanpvs = controller.get_pvs(scanpvnames)
+        for pv in scanpvs:
+            self.assertEqual( scanpvs[pv].mode.mode, scan_mode.name) 
+
+        monitorpvnames = controller.list_pvs(modename=monitor_mode.name)
+        monitorpvs = controller.get_pvs(monitorpvnames)
+        for pv in monitorpvs:
+            self.assertEqual( monitorpvs[pv].mode.mode, monitor_mode.name) 
+
+
+    def test_get_pvs(self):
+        controller.subscribe('DEFAULT.PV', SubscriptionMode.Monitor())
+        controller.subscribe('FOO.PV', SubscriptionMode.Monitor(delta=0.123))
+        controller.subscribe('BAR.PV', SubscriptionMode.Scan(period=123.1) )
+
+        all_apvs = controller.get_pvs(controller.list_pvs())
+        pvnames = ('DEFAULT.PV', 'FOO.PV', 'BAR.PV')
+        self.assertEqual( len(all_apvs), 3)
+        for pvname in pvnames:
+            self.assertIn(pvname, all_apvs)
+ 
+        singleapv = controller.get_pv('DEFAULT.PV')
+        defaultapv = all_apvs['DEFAULT.PV']
+        self.assertEqual(singleapv, defaultapv)
+        self.assertEqual( defaultapv.name, 'DEFAULT.PV' )
+        self.assertEqual( defaultapv.mode.name, SubscriptionMode.Monitor.name )
+        self.assertEqual( defaultapv.mode.delta, 0.0 )
+
+        fooapv = all_apvs['FOO.PV']
+        self.assertEqual( fooapv.name, 'FOO.PV' )
+        self.assertEqual( fooapv.mode.name, SubscriptionMode.Monitor.name )
+        self.assertEqual( fooapv.mode.delta, 0.123 )
+
+        barapv = all_apvs['BAR.PV']
+        self.assertEqual( barapv.name, 'BAR.PV' )
+        self.assertEqual( barapv.mode.name , SubscriptionMode.Scan.name )
+        self.assertEqual( barapv.mode.period, 123.1 )
+
+        self.assertFalse(controller.get_pv('whatever'))
+        
+        self.assertRaises(TypeError, controller.get_pvs, 'not a collection')
 
     def test_save_config(self):
         controller.subscribe('DEFAULT.PV', SubscriptionMode.Monitor())
@@ -402,7 +532,7 @@ class TestController(unittest.TestCase):
 
         cfg = controller.save_config()
 
-        reqids = controller.unsubscribe('*')
+        reqids = controller.munsubscribe(controller.list_pvs('*'))
         wait_for_reqids(controller.get_result, reqids)
 
         logger.info("Trying to load:\n%s", cfg)
@@ -416,75 +546,22 @@ class TestController(unittest.TestCase):
         self.assertIn('FOO.PV', pvnames_from_receipts)
         self.assertIn('BAR.PV', pvnames_from_receipts)
 
-        av = controller.get_info('DEFAULT.PV')
+        av = controller.get_pv('DEFAULT.PV')
         self.assertEqual( av.name, 'DEFAULT.PV' )
         self.assertEqual( av.mode.name, SubscriptionMode.Monitor.name )
         self.assertEqual( av.mode.delta, 0.0 )
 
-        av = controller.get_info('FOO.PV')
+        av = controller.get_pv('FOO.PV')
         self.assertEqual( av.name, 'FOO.PV' )
         self.assertEqual( av.mode.name, SubscriptionMode.Monitor.name )
         self.assertEqual( av.mode.delta, 0.123 )
 
-        av = controller.get_info('BAR.PV')
+        av = controller.get_pv('BAR.PV')
         self.assertEqual( av.name, 'BAR.PV' )
         self.assertEqual( av.mode.name, SubscriptionMode.Scan.name )
         self.assertEqual( av.mode.period, 123.1 )
 
-
-    def test_get_pvs(self):
-        monitor_mode = SubscriptionMode.Monitor()
-        scan_mode = SubscriptionMode.Scan(period=1)
-        now_ts = time.time() * 1e6
-        num_pvs = len(self.pvs)
-        half = num_pvs // 2
-
-        receipts = [ controller.subscribe(pv, monitor_mode) for pv in self.pvs[:half] ]
-        receipts += [ controller.subscribe(pv, scan_mode) for pv in self.pvs[half:] ]
-
-        wait_for_reqids(controller.get_result, receipts)
-            
-        time.sleep(5)
-
-        all_apvs = [ apv for apv in controller.get_pvs() ]
-        all_pv_names = [ apv.name for apv in all_apvs ]
-        all_pv_modes = [ apv.mode for apv in all_apvs ]
-        all_pv_sinces = [ apv.since for apv in all_apvs ]
-
-        for pv in self.pvs:
-            self.assertIn(pv, all_pv_names)
-
-        for mode in all_pv_modes[:half]:
-            self.assertEqual(monitor_mode, mode)
-        for mode in all_pv_modes[half:]:
-            self.assertEqual(scan_mode, mode)
-
-        for since in all_pv_sinces:
-            self.assertAlmostEqual(now_ts, since, delta=10e6)
-
-
-        long_apvs = [apv for apv in controller.get_pvs('*long*')]
-        for long_apv in long_apvs:
-            self.assertRegexpMatches(long_apv.name, '.*long.*')
-
-        scan_apvs = [apv for apv in controller.get_pvs(modename_pattern='Scan')]
-        monitor_apvs = [apv for apv in controller.get_pvs(modename_pattern='Monitor')]
-
-        for scan_apv in scan_apvs:
-            self.assertEqual(scan_apv.mode.name, SubscriptionMode.Scan.name)
-
-        for monitor_apv in monitor_apvs:
-            self.assertEqual(monitor_apv.mode.name, SubscriptionMode.Monitor.name)
-
-
-
     def tearDown(self):
-        try:
-            for pv in self.pvs:
-                controller.unsubscribe(pv)
-        except ValueError:
-            pass
-
         controller.shutdown()
         #datastore.reset_schema(settings.DATASTORE['servers'][0], settings.DATASTORE['keyspace'])
 
