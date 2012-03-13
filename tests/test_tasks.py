@@ -4,6 +4,7 @@ import time
 import random
 import multiprocessing
 import pdb
+import functools
 from collections import defaultdict
 
 from caa.tasks import Task, WorkersPool, TimersPool
@@ -95,11 +96,23 @@ class TestTasks(unittest.TestCase):
         self.assertTrue(ns.cb_invoked)
 
 
-    def test_timerids(self):
+#############################
+
+    def test_timer_callbacks(self):
+        results = defaultdict(list)
+        def wrapper(src):
+            def cb(value):
+                logger.info("Result %f from '%s'", value, src)
+                results[src].append(value)
+            return cb
+
         n_timers = 4
 
         tasks = [ Task('task%d'%i, g) for i in range(n_timers) ]
-        timerids = [self.timers.schedule(task, i+1) for i,task in enumerate(tasks)]
+
+        cbs = [ wrapper(task.name) for task in tasks ]
+        for i,task in enumerate(tasks):
+            self.timers.schedule(task, period=i+1, callback=cbs[i]) 
 
         # periods go from 1 to n_timers
 
@@ -107,26 +120,27 @@ class TestTasks(unittest.TestCase):
         time.sleep(sleep_for+0.2) 
         self.timers.stop() # implicit join
 
-        for i,timerid in enumerate(timerids):
-            reqids = self.timers.get_reqids(timerid)
-            self.assertEqual( len(reqids), sleep_for//(i+1) )
+        for i,task in enumerate(tasks):
+            result_for_task = results[task.name]
+            self.assertEqual( len(result_for_task), sleep_for//(i+1) )
 
     def test_timer_values(self):
+        results = []
+        def cb(value):
+            results.append(value)
+
         task = Task('task', g)
         period = random.randint(1,5)
-        timerid = self.timers.schedule(task, period)
+        reps = random.randint(1,5)
+        self.timers.schedule(task, period, cb)
 
-        time.sleep(period+0.2) 
+        time.sleep(reps*period + 0.2) 
         self.timers.stop() # implicit join
-
-        reqids = self.timers.get_reqids(timerid)
         
-        # get the values from the reqids associated to the timerid
-        completed_tasks = [ self.workers.get_result(reqid) for reqid in reqids ]
- 
-        task0 = completed_tasks[0]
-        for i in range(1,len(completed_tasks)):
-            self.assertAlmostEqual(completed_tasks[i].result - task0.result, i, delta=0.01)
+        self.assertEqual(len(results), reps)
+        task0res = results[0]
+        for i in range(1,len(results)):
+            self.assertAlmostEqual(results[i] - task0res, i*period, delta=0.1)
 
     def test_timer_invalid(self):
 

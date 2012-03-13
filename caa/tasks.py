@@ -136,14 +136,13 @@ class TimerThread(threading.Thread):
     REMOVE_TASK_TOKEN = '__REMOVE_TASK'
     ADD_TASK_TOKEN = '__ADD_TASK'
 
-    def __init__(self, inq, reqids, name, workers):
+    def __init__(self, inq, name, workers):
         """ :param inq: synchronized LIFO queue where :class:`Task` instances are
                         submitted in order to add them to the timer.
             :param name: a textual name for the timer thread.
         """
         threading.Thread.__init__(self, name=name)
         self._inq = inq
-        self._reqids = reqids
         self.tasks = {}
         self.workers = workers
 
@@ -164,10 +163,10 @@ class TimerThread(threading.Thread):
                         logger.error("Attempted to remove unknown task '%s' from timer thread", task_name)
 
                 elif action == self.ADD_TASK_TOKEN:
-                    timerid, task, period = args
+                    task, period, callback = args
                     logger.debug("Adding task '%s' with period '%f'", 
                             task, period)
-                    self.tasks[task.name] = [t, timerid, task, period]
+                    self.tasks[task.name] = [t, task, period, callback] 
                 else:
                     logger.error("Unknown action '%s'", action)
 
@@ -175,14 +174,13 @@ class TimerThread(threading.Thread):
                 pass
 
             # traverse task list checking for ripe ones
-            for enq_t, timerid, task, period in self.tasks.itervalues():
+            for enq_t, task, period, callback in self.tasks.itervalues():
                 if t - enq_t >= period:
                     # run the task to be invoked when period is over
                     logger.debug("Time up for task '%s'", task)
-                    reqid = self.workers.request(task)
-                    self._reqids.add(timerid, reqid)
+                    self.workers.request(task, callback) 
                     # update enqueue time 
-                    self.tasks[task.name][0] = t
+                    self.tasks[task.name][0] = t #FIXME: fugly
 
         logger.info("Timer %s exiting.", threading.current_thread().name)
 
@@ -192,27 +190,13 @@ class TimerThread(threading.Thread):
 class TimersPool(object):
     """ Pool of :class:`TimerThread`s """
 
-    class ReqIdsDict(object):
-        def __init__(self):
-            self._lock = threading.Lock()
-            self._d = collections.defaultdict(list)
-
-        def add(self, timerid, reqid):
-            with self._lock:
-                self._d[timerid].append(reqid)
-
-        def get(self, timerid):
-            with self._lock:
-                return self._d.get(timerid, [])
-
     def __init__(self, workers, num_timers=2):
         self._task_queues = []
         self._timers = []
         self._workers = workers
-        self._reqids = TimersPool.ReqIdsDict()
         for i in range(num_timers):
             tq = queue.Queue()
-            timer = TimerThread(tq, self._reqids, 'Timer-%d' % i, workers)
+            timer = TimerThread(tq, 'Timer-%d' % i, workers)
             
             self._task_queues.append(tq)
             self._timers.append(timer)
@@ -236,10 +220,7 @@ class TimersPool(object):
         chosen_q = self._task_queues[h]
         return chosen_q
 
-    def get_reqids(self, timerid):
-        return self._reqids.get(timerid)
-
-    def schedule(self, task, period):
+    def schedule(self, task, period, callback=None):
         """ Add `task` to one of the pool's timers. 
         
             The given `task` will be run every `period` seconds.
@@ -255,10 +236,8 @@ class TimersPool(object):
 
         q = self._get_queue_for(task.name)
 
-        timerid = uuid.uuid4()
         logger.debug("Submitting periodic request '%s' with period '%f's", task, period)
-        q.put((TimerThread.ADD_TASK_TOKEN, (timerid, task, period) ))
-        return timerid
+        q.put((TimerThread.ADD_TASK_TOKEN, (task, period, callback) ))
 
     def remove_task(self, taskname):
         q = self._get_queue_for(taskname)
@@ -421,7 +400,7 @@ class WorkersPool(object):
 
             self._result_handler_thread = threading.Thread(
                     target = result_handler, 
-                    name = "ResultHandlerThread",
+                    name = "ResultsHandlerThread",
                     args = (self._fromworkers_q, self._pending_futures))
             self._result_handler_thread.daemon = True
             self._result_handler_thread.start()
