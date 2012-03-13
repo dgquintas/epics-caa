@@ -46,7 +46,9 @@ class TestTasks(unittest.TestCase):
         self.timers = TimersPool(self.workers)
         self.timers.start()
 
-    def test_workerspool_wait(self):
+    def test_workerspool_values(self):
+        # the only way to relate a task to its future is by keeping proper
+        # track of which execution request returned which future
         tasks = [ Task('task%d'%i, f, i+1,i+2,i+3) for i in range( self.workers.num_workers ) ]
         futures = [ self.workers.request(task) for task in tasks ]
         

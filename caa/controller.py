@@ -32,21 +32,17 @@ def subscribe(pvname, mode):
 def msubscribe(pvnames, modes):
     datastore.save_pvs(pvnames, modes)
 
-    receipts = []
+    futures = []
     for pvname, mode in zip(pvnames, modes) :
         task = Task(pvname, epics_subscribe, pvname, mode)
-        receipts.append(workers.request(task))
+        futures.append(workers.request(task))
         if mode.name == SubscriptionMode.Scan.name:
             # in addition, add it to the timer so that it gets scanned
             # periodically
             periodic_task = Task(pvname, epics_periodic, pvname, mode.period)
-            # FIXME: add receipt from timers.schedule to the receipts
-            # array. In such a way that'll allow us to differentiate
-            # the fact that it's a timer's receipt, not a punctual
-            # task's
             timers.schedule(periodic_task, mode.period)
 
-    return receipts
+    return futures 
 
 
 def unsubscribe(pvname):
@@ -54,7 +50,7 @@ def unsubscribe(pvname):
     return res[0] if res else None
 
 def munsubscribe(pvnames):
-    reqids = []
+    futures = []
     pvs_dict = get_pvs(pvnames)
     datastore.remove_pvs(pvs_dict.iterkeys())
     for pvname, apv in pvs_dict.iteritems():
@@ -64,11 +60,8 @@ def munsubscribe(pvnames):
             # cancel timers 
             timers.remove_task(task.name)
 
-        reqids.append(workers.request(task))
-    return reqids
-
-def get_result(reqid):
-    return workers.get_result(reqid)
+        futures.append(workers.request(task))
+    return futures 
 
 PVStatus = namedtuple('PVStatus', 'timestamp, connected')
 def get_statuses(pvname, limit=10):

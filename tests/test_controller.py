@@ -21,17 +21,6 @@ logger = logging.getLogger('TestController')
 
 NUM_RANDOM_PVS = 10
 
-def wait_for_reqids(getterf, reqids):
-    res = []
-    for reqid in reqids:
-        while True:
-            r = getterf(reqid)
-            if r:
-                res.append(r)
-                break
-            time.sleep(0.1)
-    return res
-
 def _block_ioc(block):
     if block:
         print("Blocking IOC via iptables")
@@ -61,8 +50,8 @@ class TestController(unittest.TestCase):
 
     def test_get_statuses(self):
         # connect
-        reqids = [controller.subscribe(pv, SubscriptionMode.Monitor()) for pv in self.pvs]
-        wait_for_reqids(controller.get_result, reqids)
+        futures = [controller.subscribe(pv, SubscriptionMode.Monitor()) for pv in self.pvs]
+        [ fut.wait() for fut in futures ]
         
         conn_ts = datastore._get_timestamp_ms()
         # 1st status from initial connection => true
@@ -219,9 +208,9 @@ class TestController(unittest.TestCase):
 
     def test_get_values_disconnected(self):
         conn_ts = datastore._get_timestamp_ms()
-        reqids = [ controller.subscribe(pv, SubscriptionMode.Monitor()) \
-                for pv in self.existing_pvs ]
-        results = wait_for_reqids(controller.get_result, reqids)
+        futures = [ controller.subscribe(pv, SubscriptionMode.Monitor()) \
+                     for pv in self.existing_pvs ]
+        results = [ fut.get() for fut in futures ]
         time.sleep(2)
         # when a pv gets disconnected, NaN should be stored as its value. 
         # moreover, the pv's status should reflect the disconnection at that
@@ -262,40 +251,26 @@ class TestController(unittest.TestCase):
 
     def test_subscribe(self, mode = None):
         mode = mode or SubscriptionMode.Monitor()
-        reqids = [ controller.subscribe(pv, mode) for pv in self.pvs ]
-        results = wait_for_reqids(controller.get_result, reqids)
+        futures = [ controller.subscribe(pv, mode) for pv in self.pvs ]
+        results = [fut.get() for fut in futures]
         
-        pvs_dict = controller.get_pvs(self.pvs)
+        self.assertTrue(all(results))
+
+        pvs = list(controller.list_pvs())
         for pv in self.pvs:
-            self.assertIn(pv, pvs_dict)
-
-        pvnames_from_receipts = [ task.name for task in results ]
-        for pv in self.pvs:
-            self.assertIn(pv, pvnames_from_receipts)
-
-        for task in results:
-            self.assertTrue(task.result)
-
+            self.assertIn(pv, pvs)
 
     def test_msubscribe(self ):
         mode_choices = [SubscriptionMode.Monitor(), SubscriptionMode.Scan(period=1)]
         modes = [random.choice(mode_choices) for _ in self.pvs]
-        reqids = controller.msubscribe( self.pvs, modes )
+        futures = controller.msubscribe( self.pvs, modes )
 
-        results = wait_for_reqids(controller.get_result, reqids)
+        results = [ fut.get() for fut in futures ]
         
-        pvs_dict = controller.get_pvs(self.pvs)
+        self.assertTrue(all(results))
+        pvs = list(controller.list_pvs())
         for pv in self.pvs:
-            self.assertIn(pv, pvs_dict)
-
-        pvnames_from_receipts = [ task.name for task in results ]
-        for pv in self.pvs:
-            self.assertIn(pv, pvnames_from_receipts)
-
-        for task in results:
-            self.assertTrue(task.result)
-
-
+            self.assertIn(pv, pvs)
 
     def test_subscribe_resubscribe(self):
         # subscribe to an already subscribed pv, with a different mode perhaps
@@ -377,8 +352,8 @@ class TestController(unittest.TestCase):
         pvs = list(controller.list_pvs())
         self.assertEqual( sorted(pvs), ['BAR.PV', 'DEFAULT.PV', 'FOO.PV'])
 
-        reqids = controller.munsubscribe(pvs)
-        wait_for_reqids(controller.get_result, reqids)
+        futures = controller.munsubscribe(pvs)
+        [ fut.wait() for fut in futures]
         
         pvs = list(controller.list_pvs())
         self.assertEqual(pvs, [])
@@ -443,10 +418,10 @@ class TestController(unittest.TestCase):
 
         monitored_pvs = self.pvs[:half]
         scanned_pvs = self.pvs[half:]
-        receipts = [ controller.subscribe(pv, monitor_mode) for pv in monitored_pvs ]
-        receipts += [ controller.subscribe(pv, scan_mode) for pv in scanned_pvs ]
+        futures = [ controller.subscribe(pv, monitor_mode) for pv in monitored_pvs ]
+        futures += [ controller.subscribe(pv, scan_mode) for pv in scanned_pvs ]
 
-        wait_for_reqids(controller.get_result, receipts)
+        [ fut.wait() for fut in futures ] 
             
         time.sleep(5)
     
@@ -523,28 +498,28 @@ class TestController(unittest.TestCase):
     def test_load_config(self):
         pvnames = ('DEFAULT.PV', 'FOO.PV', 'BAR.PV')
         
-        reqids = []
-        reqids.append(controller.subscribe('DEFAULT.PV', SubscriptionMode.Monitor()))
-        reqids.append(controller.subscribe('FOO.PV',  SubscriptionMode.Monitor(0.123)))
-        reqids.append(controller.subscribe('BAR.PV', SubscriptionMode.Scan(123.1)))
+        futures = []
+        futures.append(controller.subscribe('DEFAULT.PV', SubscriptionMode.Monitor()))
+        futures.append(controller.subscribe('FOO.PV',  SubscriptionMode.Monitor(0.123)))
+        futures.append(controller.subscribe('BAR.PV', SubscriptionMode.Scan(123.1)))
 
-        wait_for_reqids(controller.get_result, reqids)
+        [ fut.wait() for fut in futures ]
 
         cfg = controller.save_config()
 
-        reqids = controller.munsubscribe(controller.list_pvs('*'))
-        wait_for_reqids(controller.get_result, reqids)
+        futures = controller.munsubscribe(controller.list_pvs('*'))
+        [ fut.wait() for fut in futures ]
 
         logger.info("Trying to load:\n%s", cfg)
 
-        reqids = controller.load_config(cfg)
-        results = wait_for_reqids(controller.get_result, reqids)
+        futures = controller.load_config(cfg)
+        results = [ fut.get() for fut in futures ]
 
-        pvnames_from_receipts = [ task.name for task in results ]
+        pvnames = list(controller.list_pvs())
 
-        self.assertIn('DEFAULT.PV', pvnames_from_receipts)
-        self.assertIn('FOO.PV', pvnames_from_receipts)
-        self.assertIn('BAR.PV', pvnames_from_receipts)
+        self.assertIn('DEFAULT.PV', pvnames)
+        self.assertIn('FOO.PV', pvnames)
+        self.assertIn('BAR.PV', pvnames)
 
         av = controller.get_pv('DEFAULT.PV')
         self.assertEqual( av.name, 'DEFAULT.PV' )

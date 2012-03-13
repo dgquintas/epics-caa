@@ -301,8 +301,10 @@ class Worker(Process):
             except Exception, e:
                 result = (False, e)
 
-            # put the result in a "future-like" instance
-            # This instance is in turn accessed 
+            # post the result to a queue, from whence
+            # it'll be read by (most likely) a thread that'll
+            # take care of populating the corresponding
+            # "future" with it
             self._outq.put((taskid, result))
 
             if not self.state[task.name]:
