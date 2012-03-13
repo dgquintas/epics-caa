@@ -2,11 +2,13 @@ import unittest
 import logging
 import time
 import random
+import multiprocessing
+import pdb
 from collections import defaultdict
 
 from caa.tasks import Task, WorkersPool, TimersPool
 
-logging.basicConfig(level=logging.DEBUG, format='[%(processName)s/%(threadName)s] %(asctime)s %(levelname)s: %(message)s')
+logging.basicConfig(level=logging.INFO, format='[%(processName)s/%(threadName)s] %(asctime)s %(levelname)s: %(message)s')
 logger = logging.getLogger('TestTasks')
 
 
@@ -43,14 +45,55 @@ class TestTasks(unittest.TestCase):
         self.timers = TimersPool(self.workers)
         self.timers.start()
 
-    def test_workerspool_request(self):
+    def test_workerspool_wait(self):
         tasks = [ Task('task%d'%i, f, i+1,i+2,i+3) for i in range( self.workers.num_workers ) ]
-        receipts = [ self.workers.request(task) for task in tasks ]
+        futures = [ self.workers.request(task) for task in tasks ]
         
-        results = wait_for_reqids(self.workers.get_result, receipts)
+        print "waiting..."
+        [ fut.wait() for fut in futures ]
+        print "done!"
 
-        for i,task in enumerate(results):
-            self.assertEqual( i+1+i+2+i+3, task.result )
+        for i, fut in enumerate(futures):
+            self.assertTrue( fut.ready )
+            self.assertTrue( fut.successful )
+            result = fut.get()
+            self.assertEqual( i+1+i+2+i+3, result )
+ 
+    def test_workerspool_blocking_get(self):
+        tasks = [ Task('task%d'%i, f, i+1,i+2,i+3) for i in range( self.workers.num_workers ) ]
+        futures = [ self.workers.request(task) for task in tasks ]
+        
+        print "waiting..."
+        for i, fut in enumerate(futures):
+            result = fut.get() # this ought to block
+            self.assertTrue( result )
+            self.assertEqual( i+1+i+2+i+3, result )
+        print "done!"
+
+    def test_workerspool_timeout_get(self):
+        task = Task('task', f, 1,2,3) 
+        future = self.workers.request(task) 
+        
+        print "waiting..."
+        self.assertRaises(multiprocessing.TimeoutError, future.get, timeout=1)
+        print "done!"
+
+    def test_workerspool_callback(self):
+        class NS: pass
+        ns = NS() #hacky way to the able to modify enclosure vars
+        ns.cb_invoked = False
+        def cb(value):
+            ns.cb_invoked = True
+            self.assertEqual(value, 1+2+3)
+
+        task = Task('task', f, 1,2,3) 
+        future = self.workers.request(task, cb) 
+        
+        print "waiting..."
+        future.wait()
+        print "done!"
+        self.assertTrue(ns.cb_invoked)
+
 
     def test_timerids(self):
         n_timers = 4

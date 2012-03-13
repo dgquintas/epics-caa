@@ -1,7 +1,9 @@
 import multiprocessing
 from multiprocessing import cpu_count, Process, current_process
+from multiprocessing.queues import SimpleQueue
 import threading
 import uuid
+import itertools
 from zlib import adler32
 try: 
     import queue
@@ -13,6 +15,9 @@ import collections
 import logging
 
 logger = logging.getLogger('tasks')
+
+
+task_id_generator = itertools.count()
 
 class Task(object):
     """ Encapsulates a function alongside its arguments.
@@ -39,8 +44,89 @@ class Task(object):
     def __repr__(self):
         return 'Task-%s<%s(%r)>' % (self.name, self.f.__name__, self.args)
 
+# TaskResult = collections.namedtuple('TaskResult', 'name, result, timestamp')
 
-TaskResult = collections.namedtuple('TaskResult', 'name, result, timestamp')
+def result_handler(fromworkers_q, pending_futures):
+        logger.info("Starting result handler thread")
+        get = fromworkers_q.get
+
+        while True:
+            task = get()
+            if not task: # got sentinel
+                break
+
+            taskid, result = task
+            pending_futures[taskid]._set(result)
+
+        while pending_futures: # flush remaining
+            task = get()
+            if not task: # ignore extra sentinel
+               continue 
+
+            taskid, result = task
+            pending_futures[taskid]._set(result)
+
+        logger.info("Result handler thread exiting...")
+
+
+# based on multiprocessing.pool.ApplyResult
+class TaskFuture(object):
+    def __init__(self, callback, pending_futures):
+        self._cond = threading.Condition( threading.Lock() )
+        self._ready = False
+        self._callback = callback
+        self._taskid = task_id_generator.next()
+        self._pending_futures = pending_futures
+        self._pending_futures[self._taskid] = self
+
+    @property
+    def taskid(self):
+        return self._taskid 
+
+    @property
+    def ready(self):
+        return self._ready
+
+    @property 
+    def successful(self):
+        assert self._ready
+        return self._success
+
+    def __repr__(self):
+        return "TaskResult(taskid=%d, ready=%s, callback=%s)" % \
+                (self.taskid, self.ready, self._callback)
+
+    def wait(self, timeout=None):
+        self._cond.acquire()
+        try:
+            if not self._ready:
+                self._cond.wait(timeout)
+        finally:
+            self._cond.release()
+
+    def get(self, timeout=None):
+        self.wait(timeout)
+        if not self._ready:
+            raise multiprocessing.TimeoutError
+        if self._success:
+            return self._value
+        else:
+            raise self._value
+
+    # invoked from ResultsHandlerThread
+    def _set(self, result):
+        self._success, self._value = result
+        if self._callback and self._success:
+            self._callback(self._value)
+        self._cond.acquire()
+        try:
+            self._ready = True
+            self._cond.notify()
+        finally:
+            self._cond.release()
+        del self._pending_futures[self._taskid] 
+
+
 #######################################################
 
 class TimerThread(threading.Thread):
@@ -211,27 +297,34 @@ class TimersPool(object):
 
 class Worker(Process):
 
-    STOP_SENTINEL = '__STOP'
-
-    def __init__(self, inq, out, name):
+    def __init__(self, inq, outq, name):
         Process.__init__(self, name=name)
         self._inq = inq
-        self._out = out
+        self._outq = outq
 
         self.state = collections.defaultdict(dict)
 
     def run(self):
         logger.debug("At worker's run() method")
-        for reqid, task in iter(self._inq.get, self.STOP_SENTINEL):
-            logger.debug("Processing task '%s' with id '%s'.Queue size: %d ", task, reqid, self._inq.qsize())
-            
-            t_res = task(self.state[task.name])  
-            logger.debug("Task with id '%s' for PV '%s' completed. Result: '%r'", \
-                    reqid, task.name, t_res )
+        while True:
+            taskbundle = self._inq.get()
 
-            if t_res:
-                taskresult = TaskResult(task.name, t_res, time.time()*1e6)
-                self._out[reqid] = taskresult
+            if not taskbundle: # got sentinel
+                break
+            
+            taskid, task = taskbundle
+            logger.debug("Processing task '%s' with id '%s'.", task, taskid)
+
+            try:
+                result = (True, task(self.state[task.name]))  
+                logger.debug("Task with id '%s' for PV '%s' completed. Result: '%r'", \
+                        taskid, task.name, result[1])
+            except Exception, e:
+                result = (False, e)
+
+            # put the result in a "future-like" instance
+            # This instance is in turn accessed 
+            self._outq.put((taskid, result))
 
             if not self.state[task.name]:
                 del self.state[task.name]
@@ -246,14 +339,15 @@ class WorkersPool(object):
         scanned PVs.
     """
     def __init__(self, num_workers=cpu_count()):
-        self._completed_dict = multiprocessing.Manager().dict()
-        self._task_queues = []
+        self._fromworkers_q = SimpleQueue()
+        self._toworkers_qs = []
         self._workers = []
+        self._pending_futures = {}
         for i in range(num_workers):
-            tq = multiprocessing.Queue()
-            w = Worker(tq, self._completed_dict, "Worker-%d" % i)
+            toworker_q = SimpleQueue()
+            w = Worker(toworker_q, self._fromworkers_q, "Worker-%d" % i)
 
-            self._task_queues.append(tq)
+            self._toworkers_qs.append(toworker_q)
             self._workers.append(w)
 
         self._req_lock = threading.Lock()
@@ -268,20 +362,27 @@ class WorkersPool(object):
     def num_workers(self):
         return len(self._workers)
 
-    def _submit(self, task, reqid=None):
-        reqid = reqid or uuid.uuid4()
+    def _submit(self, task, callback):
+        # XXX: instead of a reqid, return a 
+        # "Future", which holds a reference to 
+        # the place where the result will be stored
+        # by the worker (some Managed instance, shared
+        # by the Future and the worker process)
+        # candidate: 
+        taskfuture = TaskFuture(callback, self._pending_futures)
         # calculate the hash for the task based on its name
         h = adler32(task.name) % self.num_workers
-        chosen_q = self._task_queues[h]
-        chosen_q.put((reqid, task))
+        toworker_q = self._toworkers_qs[h]
+        toworker_q.put((taskfuture.taskid, task)) 
+
         if not self._workers[h].is_alive():
             msg = "Worker '%d' has died!" % h
             logger.critical(msg)
             raise RuntimeError(msg)
 
-        return reqid
+        return taskfuture 
 
-    def request(self, task):
+    def request(self, task, callback=None):
         """ Submit a :class:`Task` instance to be run by one of the processes """
         self._req_lock.acquire()
         logger.debug("Acquired request lock for task '%s'", task)
@@ -292,19 +393,16 @@ class WorkersPool(object):
         if not self._stopping:
             # don't accept requests if we are shutting down
             logger.debug("Submitting request '%s'", task)
-            reqid = self._submit(task)
+            taskfuture = self._submit(task, callback)
         else: 
             logger.warn("Request for '%s' received while shutting down", task)
-            reqid = None
+            taskfuture = None
 
         self._req_lock.release()
         logger.debug("Released request lock for task '%s'", task)
-        return reqid 
+        return taskfuture 
 
 
-    def get_result(self, reqid):
-        return self._completed_dict.pop(reqid, None)
- 
     def join(self):
         """ Blocks until all pending requests have finished """
         logger.debug("%s blocking until all pending requests finish.", self)
@@ -321,13 +419,21 @@ class WorkersPool(object):
                 logger.info("Starting worker %s", w.name)
                 w.start()
 
+            self._result_handler_thread = threading.Thread(
+                    target = result_handler, 
+                    name = "ResultHandlerThread",
+                    args = (self._fromworkers_q, self._pending_futures))
+            self._result_handler_thread.daemon = True
+            self._result_handler_thread.start()
+
+
     def stop(self):
         if not self._running:
             logger.warn("Workers weren't running.")
         else:
             logger.info("Stopping workers...")
             self._stopping = True
-            [ q.put(Worker.STOP_SENTINEL) for q in self._task_queues ]
+            [ q.put(None) for q in self._toworkers_qs]
             self.join()
             self._running = False
             self._stopping = False
