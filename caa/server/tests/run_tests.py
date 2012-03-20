@@ -2,11 +2,7 @@
 import unittest
 
 TEST_MODULES = [
-    'list',
-    'your',
-    'test',
-    'modules',
-    'test.test_something',
+    'controller',
 ]
 
 def all():
@@ -14,4 +10,8 @@ def all():
 
 if __name__ == '__main__':
     import tornado.testing
+    import os
+    from caa.conf import ENVIRONMENT_VARIABLE
+    os.environ[ENVIRONMENT_VARIABLE] = 'caa.settings_dev'
+
     tornado.testing.main()

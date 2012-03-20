@@ -1,50 +1,31 @@
 from handlers import controller, server 
+from tornado.web import URLSpec
 
 url_patterns = [
-    (r"/subscription", controller.SubscriptionHandler),
-    # POST: 
-    # create subscription. Body: JSON object with
-    # 2 keys: "pvname" and "mode". Mode must be another
-    # JSON object containing the description of the mode. 
-    #
-    # Eg: 
-    # {"pvname": "test:double2", "mode": {"mode": "Scan", "period": 1.1}}
-    #
-    # GET: 
-    # Optional query arguments: "pvname" and "mode", both glob patterns. 
-    # Subscribed PVs matching the given name and mode will be returned in the
-    # following format:
-    #{
-    #    "results": [
-    #        {
-    #            "mode": {
-    #                "delta": 1.1, 
-    #                "max_freq": null, 
-    #                "mode": "Monitor"
-    #            }, 
-    #            "pvname": "test:long2"
-    #        }, 
-    #        {
-    #            "mode": {
-    #                "mode": "Scan", 
-    #                "period": 1.1
-    #            }, 
-    #            "pvname": "test:double2"
-    #        }
-    #    ], 
-    #    "success": true
-    #}
-    # 
-    # DELETE: 
-    # unsubscribes from a PV by name. 
-    #
-    # Eg: 
-    # {"pvname": "test:double2"}
+    URLSpec(r"^/subscriptions/?$", controller.RootSubscriptionHandler, name='subs-root'),
+    # GET: List of subscribed pvs
+    # Optional query arguments: 
+    #   pvname: only pvs matching this glob
+    #   mode: only pvs with this mode (refer to the mode by name)
     
+    # PUT:
+    # Replace current subscriptions with the given set. 
+    # Body:
+    # [ {pvname: <pvname_1>, mode: <parseable mode_1 definition>}, 
+    #   ...
+    #   {pvname: <pvname_n>, mode: <parseable mode_n definition>} ]
+ 
+    # POST:
+    # Create a new subscription. The url of the new subscribed pv is returned. 
+    # Body: 
+    # {pvname: <pvname>, mode: <parseable mode definition>} 
+
+    # DELETE:
+    # unsubscribe from all pvs
     
-    (r"/info", controller.InfoHandler),
+    URLSpec(r"^/subscriptions/(?P<pvname>.+)$", controller.PVSubscriptionHandler, name='subs-pv'),
     # GET: 
-    # requires a "pvname" query argument. Returns information about that PV's subscription. 
+    # Return information on the PV's subscription. 
     # Eg:
     # {
     #     "results": {
@@ -53,51 +34,76 @@ url_patterns = [
     #             "period": 1.1
     #         }, 
     #         "name": "test:double2", 
-    #         "since": 1328917326829359
+    #         "since": 1328917326829359,
     #     }, 
     #     "success": true
-    # }\
+    # }
     # If the system isn't subscribed to the given PV, "null" is returned in the "results":
     # {
     #    "results": null, 
     #    "success": true
     # }
-    
-    (r"/status", controller.StatusHandler),
-    # GET: requires a PV name passed as a query argument under key "pvname"
-    # returns the status of the given PV: 
-    # {
-    #     "results": {
-    #         "connected": <boolean>
-    #     }, 
-    #     "success": true
-    # }
-    # 
-    # If PV is unknown, 
-    # {
-    #    "results": null, 
-    #    "success": true
-    # }
  
-    (r"/values", controller.ValuesHandler),
-    # GET: 
+    # PUT:
+    # replace subscription if already exists. Create it otherwise.
+    # Body: 
+    # {"mode": {"mode": "Scan", "period": 1.1}}
+ 
+    # DELETE: 
+    # unsubscribes from the pv
+
+    
+
+    (r"^/statuses/?$", controller.RootStatusesHandler),
+    # GET:
+    # Return the status of all the subscribed PVs
+    # query arguments:
+    # pvname: name glob
+    # limit: number of status entries to return per PV. 1 (latest) by default
+
+    (r"^/statuses/(?P<pvname>.+)$", controller.PVStatusesHandler),
+    # GET:
+    # Return the status of the given PV
     # query arguments: 
-    # * pvname
-    # * [field, ...]
-    # * [limit=100]
-    # * [from_date]
-    # * [to_date]
+    # limit: number of status entries to return. 10 by default
+
+    (r"^/values/?$", controller.RootValuesHandler),
+    # GET: 
+    # Return the last <limit> values for all subscribed PV's. If <pvname>
+    # glob present, return only those PV's whose name match it.
+    # If one or more <field> is given, return only those fields from the
+    # PV values data.
+    # 
+    # query arguments: 
+    # * pvname: name glob
+    # * [field, ... ]
+    # * [limit=1]
+    
+    (r"^/values/(?P<pvname>.+)$", controller.PVValuesHandler),
+    # GET:
+    # Return values for <pvname>.
+    #
+    # query arguments:
+    # [field, ...]
+    # [limit=100]
+    # [from_date]
+    # [to_date]
 
 
-    (r"/config", controller.ConfigHandler),
+    (r"^/config$", controller.ConfigHandler),
     # GET:
     # returns current config
     # 
-    # POST:
+    # PUT:
     # loads the configuration given in the POST body
 
-    (r"/server/info", server.ServerInfoHandler),
 
+##################################
+
+    (r"^/server/info$", server.ServerInfoHandler),
+    # GET: Return information about the server
+
+    (r"^/server/status$", server.ServerStatusHandler),
     # POST: if "shutdown" is provided in the body of the POST, well,
     # guess what will happen
     # GET: returns the status of the server in the following fashion
@@ -109,5 +115,5 @@ url_patterns = [
     #             'timers' : <int>,
     #             'pvs'    : <int>}
     #        }
-    (r"/server/status", server.ServerStatusHandler),
+
 ]

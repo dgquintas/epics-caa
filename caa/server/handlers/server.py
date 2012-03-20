@@ -9,7 +9,8 @@ import resource
 logger = logging.getLogger('server.caa.' + __name__)
 
 class ServerInfoHandler(BaseHandler):
-
+    # TODO: add version info
+    
     @staticmethod
     def _gather_res_info(rusage_struct):
         d = {'RSS': rusage_struct.ru_maxrss, 'usertime': rusage_struct.ru_utime, 'systemtime': rusage_struct.ru_stime}
@@ -18,12 +19,15 @@ class ServerInfoHandler(BaseHandler):
     def get(self):
         rself = resource.getrusage(resource.RUSAGE_SELF)
         rchildren = resource.getrusage(resource.RUSAGE_CHILDREN)
+        rboth = resource.getrusage(resource.RUSAGE_BOTH)
 
         self.win( {'self': self._gather_res_info(rself), \
-                   'workers': self._gather_res_info(rchildren)} )
+                   'workers': self._gather_res_info(rchildren), \
+                   'both': self._gather_res_info(rboth) } )
 
 class ServerStatusHandler(BaseHandler):
 
+    # TODO: add uptime info
     def _shutdown(self):
         """ Fully stops the archiver and this server """
         controller.shutdown()
@@ -31,11 +35,12 @@ class ServerStatusHandler(BaseHandler):
         ioloop = IOLoop.instance()
         ioloop.stop()
 
-
     def get(self):
         num_workers = controller.workers.num_workers
         num_timers  = controller.timers.num_timers
-        num_pvs = sum(1 for _ in controller.get_pvs())
+        num_monitored_pvs = len(list(controller.list_pvs(modename='Monitor')))
+        num_scan_pvs = len(list(controller.list_pvs(modename='Scan')))
+        num_total_pvs = num_monitored_pvs + num_scan_pvs
 
         d = {'status': 
                 {'workers': controller.workers.running,
@@ -44,7 +49,9 @@ class ServerStatusHandler(BaseHandler):
             'number_of': 
                 {'workers': num_workers,
                  'timers' : num_timers,
-                 'pvs'    : num_pvs
+                 'monitored_pvs': num_monitored_pvs,
+                 'scanned_pvs': num_scan_pvs,
+                 'total_pvs': num_total_pvs
                 }
             }
         self.win(d)
