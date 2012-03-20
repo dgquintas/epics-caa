@@ -72,11 +72,15 @@ class TestController(unittest.TestCase):
 
             [reconn, disconn, conn] = statuses
 
-            self.assertTrue(conn.connected)
-            self.assertLess( (conn.timestamp - conn_ts)/1e6, 0.5 )
+            self.assertTrue(conn['connected'])
+            self.assertLess( (conn['timestamp'] - conn_ts)/1e6, 0.5 )
 
-            self.assertFalse(disconn.connected)
-            self.assertTrue(reconn.connected)
+            self.assertFalse(disconn['connected'])
+            self.assertTrue(reconn['connected'])
+
+            self.assertEqual(reconn['pvname'], pv)
+            self.assertEqual(conn['pvname'], pv)
+            self.assertEqual(disconn['pvname'], pv)
             
         for fakepv in self.fake_pvs:
             statuses = controller.get_statuses(fakepv)
@@ -395,7 +399,14 @@ class TestController(unittest.TestCase):
         controller.subscribe('BAR.PV', SubscriptionMode.Scan(period=123.1) )
         
         pvs = controller.list_pvs()
-        self.assertEqual( sorted(pvs), ['BAR.PV', 'DEFAULT.PV', 'FOO.PV'])
+        self.assertItemsEqual( pvs, ['BAR.PV', 'DEFAULT.PV', 'FOO.PV'])
+
+        sortedpvs = controller.list_pvs(sort=True)
+        self.assertEqual( sortedpvs, ['BAR.PV', 'DEFAULT.PV', 'FOO.PV'])
+
+        allpvs_with_pattern = controller.list_pvs('*', None)
+        allpvs_implicit = controller.list_pvs()
+        self.assertItemsEqual(allpvs_with_pattern, allpvs_implicit)
 
         dotpv_pvs = controller.get_pvs(controller.list_pvs('*.PV'))
         self.assertEqual( sorted(dotpv_pvs), ['BAR.PV', 'DEFAULT.PV', 'FOO.PV'])
