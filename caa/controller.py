@@ -63,14 +63,14 @@ def munsubscribe(pvnames):
         futures.append(workers.request(task))
     return futures 
 
-PVStatus = namedtuple('PVStatus', 'timestamp, connected')
 def get_statuses(pvname, limit=10):
     """ Returns the ``limit`` latest connection status for the given PV.
     
         The returned list is sorted, starting with the most recent.
     """
     sts = datastore.read_status(pvname, limit=limit, ini=None, end=None)
-    res = [PVStatus(*st) for st in sts] 
+    # sts is a list of pairs (timestamp, connected)
+    res = [{'pvname': pvname, 'timestamp': st[0], 'connected': st[1]} for st in sts] 
     return res
 
 def get_values(pvname, fields=[], limit=100, from_date=None, to_date=None):
@@ -83,8 +83,12 @@ def get_pv(pvname):
 def get_pvs(pvnames):
     return datastore.read_pvs(pvnames)
 
-def list_pvs(namepattern=None, modename=None):
-    return datastore.list_pvs(namepattern, modename)
+def list_pvs(namepattern=None, modename=None, sort=False):
+    res = datastore.list_pvs(namepattern, modename)
+    if sort:
+        return sorted(res)
+    else:
+        return res
     
 
 ############################
@@ -129,7 +133,7 @@ def save_config():
 
 
 def shutdown():
-    logger.info("Unsubscribing to all subscribed PVs...")
+    logger.info("Unsubscribing from all subscribed PVs...")
 
     all_pvs = list_pvs()
     munsubscribe(all_pvs)
@@ -179,7 +183,7 @@ def epics_subscribe(state, pvname, mode):
 
 def epics_unsubscribe(state, pvname):
     """ Function to be run by the worker in order to unsubscribe """
-    logger.info("Unsubscribing to %s", pvname)
+    logger.info("Unsubscribing from %s", pvname)
     pv = state['pv']
     pv.disconnect()
     del state['pv']
