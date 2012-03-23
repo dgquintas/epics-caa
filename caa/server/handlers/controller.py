@@ -143,9 +143,9 @@ class PVStatusesHandler(BaseHandler):
 class RootValuesHandler(BaseHandler):
     @tornado.web.addslash
     def get(self):
-        pvname = self.get_argument('pvname')
+        pvnameglob = self.get_argument('pvname', default=None)
         fields = self.get_arguments('field')
-        limit = int(self.get_argument('limit', default=100))
+        limit = int(self.get_argument('limit', default=1))
         from_date = self.get_argument('from_date', default=None)
         to_date = self.get_argument('to_date', default=None)
 
@@ -155,17 +155,16 @@ class RootValuesHandler(BaseHandler):
         if to_date:
             to_date = datetime.datetime.fromtimestamp(float(to_date))
         
-        try:
-            res = controller.get_values(pvname, fields, limit, from_date, to_date)
-            self.win(res if res else None)
-        except KeyError as e:
-            self.fail("Invalid field: %s" % e)
-        except Exception as e:
-            self.fail("Error: %s" % e)
+        pvnames = controller.list_pvs(pvnameglob)
+        res = {}
+        for pvname in pvnames:
+            values_for_pv = controller.get_values(pvname, fields, limit, from_date, to_date) 
+            res[pvname] = values_for_pv
+
+        self.win(res)
 
 class PVValuesHandler(BaseHandler):
-    def get(self):
-        pvname = self.get_argument('pvname')
+    def get(self, pvname):
         fields = self.get_arguments('field')
         limit = int(self.get_argument('limit', default=100))
         from_date = self.get_argument('from_date', default=None)
@@ -177,15 +176,11 @@ class PVValuesHandler(BaseHandler):
         if to_date:
             to_date = datetime.datetime.fromtimestamp(float(to_date))
         
-        try:
-            res = controller.get_values(pvname, fields, limit, from_date, to_date)
-            self.win(res if res else None)
-        except KeyError as e:
-            self.fail("Invalid field: %s" % e)
-        except Exception as e:
-            self.fail("Error: %s" % e)
+        res = controller.get_values(pvname, fields, limit, from_date, to_date)
+        self.win(res if res else None)
 
 ##########################################################################
+
 
 from contextlib import closing
 class ConfigHandler(BaseHandler):

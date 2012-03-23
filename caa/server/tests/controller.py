@@ -353,4 +353,112 @@ class PVStatusesTest(BaseTest):
         #TODO
  
 
+class RootValuesTest(BaseTest):
+    def __init__(self, *args, **kwargs):
+        BaseTest.__init__(self, *args, **kwargs)
+
+    def setUp(self):
+        BaseTest.setUp(self)
+
+        self.pvnames = ("test:long1", "test:double1")
+        self.modedefs = ({"mode": "Monitor", "delta": 0.1},
+                    {"mode": "Scan", "period": 1.0})
+        self._subscribe_to_many(self.pvnames, self.modedefs)
+
+    def test_get_values(self):
+        time.sleep(2)
+
+        response = self.fetch('/values/')
+        self.assertEqual(response.code, 200)
+        self.assertFalse(response.error)
+
+        body = json_decode(response.body)
+        self.assertTrue(body['status']['success'])
+        self.assertEqual(body['status']['code'], 200)
+        body_response = body['response']
+ 
+        # we should have one value (the last one) for each of the two pvs
+        ts = time.time()
+        for pvname in self.pvnames:
+            self.assertIn(pvname, body_response)
+            pvvalues = body_response[pvname]
+            self.assertEqual( len(pvvalues), 1)
+            last_value = pvvalues[0]
+            self.assertAlmostEqual(ts, last_value['timestamp'], delta=2)
+
+
+    def test_get_values_limit(self):
+        time.sleep(4)
+
+        response = self.fetch('/values/?limit=2')
+        self.assertEqual(response.code, 200)
+        self.assertFalse(response.error)
+
+        body = json_decode(response.body)
+        self.assertTrue(body['status']['success'])
+        self.assertEqual(body['status']['code'], 200)
+        body_response = body['response']
+ 
+        # we should have two values for each of the two pvs
+        ts = time.time()
+        for pvname in self.pvnames:
+            self.assertIn(pvname, body_response)
+            pvvalues = body_response[pvname]
+            self.assertEqual( len(pvvalues), 2)
+            for pvvalue in pvvalues :
+                self.assertAlmostEqual(ts, pvvalue['timestamp'], delta=2)
+
+        #print json_encode(json_decode(response.body), indent=4)
+
+
+    def test_get_values_glob(self):
+        time.sleep(2)
+
+        response = self.fetch('/values/?' + \
+                urllib.urlencode([('pvname', '*long*'), ('limit', 2)]))
+        self.assertEqual(response.code, 200)
+        self.assertFalse(response.error)
+
+        body = json_decode(response.body)
+        self.assertTrue(body['status']['success'])
+        self.assertEqual(body['status']['code'], 200)
+        body_response = body['response']
+ 
+        # we should have two values for the pv with 'long' in its name
+        ts = time.time()
+        self.assertEqual(len(body_response), 1)
+        self.assertIn('test:long1', body_response)
+        pvvalues = body_response['test:long1']
+        self.assertEqual( len(pvvalues), 2)
+        for pvvalue in pvvalues :
+            self.assertAlmostEqual(ts, pvvalue['timestamp'], delta=2)
+
+
+        #print json_encode(json_decode(response.body), indent=4)
+
+    def test_get_values_fields(self):
+        time.sleep(2)
+        
+        fields = ('pvname', 'value', 'timestamp', 'archived_at')
+        queryargs = urllib.urlencode([ ('field', v) for v in fields ])
+
+        response = self.fetch('/values/?' + queryargs)
+        self.assertEqual(response.code, 200)
+        self.assertFalse(response.error)
+
+        body = json_decode(response.body)
+        self.assertTrue(body['status']['success'])
+        self.assertEqual(body['status']['code'], 200)
+        body_response = body['response']
+ 
+        ts = time.time()
+        for pvname in self.pvnames:
+            self.assertIn(pvname, body_response)
+            pvvalues = body_response[pvname]
+            self.assertEqual( len(pvvalues), 1)
+            last_value = pvvalues[0]
+            self.assertItemsEqual( last_value.keys(), fields )
+            self.assertAlmostEqual(ts, last_value['timestamp'], delta=2)
+
+
 

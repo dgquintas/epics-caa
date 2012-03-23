@@ -3,6 +3,7 @@ import unittest
 
 TEST_MODULES = [
     'controller',
+    'misc',
 ]
 
 def all():

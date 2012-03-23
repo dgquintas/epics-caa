@@ -52,7 +52,6 @@ url_patterns = [
     # DELETE: 
     # unsubscribes from the pv
 
-    
 
     (r"^/statuses/?$", controller.RootStatusesHandler),
     # GET:
@@ -69,7 +68,7 @@ url_patterns = [
 
     (r"^/values/?$", controller.RootValuesHandler),
     # GET: 
-    # Return the last <limit> values for all subscribed PV's. If <pvname>
+    # Return the last <limit> (default 1) values for all subscribed PV's. If <pvname>
     # glob present, return only those PV's whose name match it.
     # If one or more <field> is given, return only those fields from the
     # PV values data.
