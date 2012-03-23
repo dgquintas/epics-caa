@@ -223,7 +223,7 @@ class TestController(unittest.TestCase):
             statuses = controller.get_statuses(pv)
             self.assertTrue(statuses)
             status = statuses[0]
-            self.assertTrue(status.connected)
+            self.assertTrue(status['connected'])
 
             last_values = controller.get_values(pv)
             self.assertTrue(last_values)
@@ -241,7 +241,7 @@ class TestController(unittest.TestCase):
             statuses = controller.get_statuses(pv)
             self.assertTrue(statuses)
             status = statuses[0]
-            self.assertFalse(status.connected)
+            self.assertFalse(status['connected'])
 
             last_values = controller.get_values(pv)
             self.assertTrue(last_values)
