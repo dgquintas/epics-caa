@@ -281,6 +281,22 @@ def read_values(pvname, fields, limit, ini, end):
         :param ini: `datetime` instance. First returned item will be as or more recent than it.
         :param end: `datetime` instance. Last returned item will not be more recent than it.
     """
+    def _join_timeline_with_updates(timeline):
+        # timeline is a dict of the form (timestamp, update_id)...
+        # join with UPDATES based on update_id
+
+        # get all the update_ids
+        update_ids = timeline.values()
+        # now retrieve those with a multiget
+        updates = _cf('updates').multiget(update_ids) # updates is a dict { up_id: { pv: ..., value: ...} }
+        res = []
+        for pv_data in updates.itervalues():
+            out_data = {}
+            for k in (fields or pv_data.keys()):
+                out_data[k] = json.loads(pv_data.get(k)) # if field not in pv, it'll be null
+            res.append(out_data)
+        return res
+
     # turn datetime's into timestamps (secs from epoch). 
     # And then into ms, as that's how the timestamps are represented
     # in the cf
@@ -293,25 +309,9 @@ def read_values(pvname, fields, limit, ini, end):
                 column_start=ts_end, column_finish=ts_ini)
     except pycassa.NotFoundException:
         return []
-    res = _join_timeline_with_updates(timeline, fields)
+    res = _join_timeline_with_updates(timeline)
     return res
 
 ##########################################################
-
-def _join_timeline_with_updates(timeline, fields):
-    # timeline is a dict of the form (timestamp, update_id)...
-    # join with UPDATES based on update_id
-
-    # get all the update_ids
-    update_ids = timeline.values()
-    # now retrieve those with a multiget
-    updates = _cf('updates').multiget(update_ids) # updates is a dict { up_id: { pv: ..., value: ...} }
-    res = []
-    for pv_data in updates.itervalues():
-        out_data = {}
-        for k in (fields or pv_data.keys()):
-            out_data[k] = json.loads(pv_data[k])
-        res.append(out_data)
-    return res
 
 
