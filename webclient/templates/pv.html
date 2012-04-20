@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+
+{% block styles %} 
+<link href="{{ static_url("css/TableTools.css") }}" rel="stylesheet">
+<link href="{{ static_url("css/ColVis.css") }}" rel="stylesheet">
+<link href="{{ static_url("css/DT_bootstrap.css") }}" rel="stylesheet">
+<link href="{{ static_url("bootstrap/css/datepicker.css") }}" rel="stylesheet">
+{% end %}
+
+{% block scripts %}
+<script src="{{ static_url("js/jquery.dataTables.min.js") }}"></script>
+<script src="{{ static_url("js/TableTools.min.js") }}"></script>
+<script src="{{ static_url("js/ColVis.min.js") }}"></script>
+<script src="{{ static_url("js/DT_bootstrap.js") }}"></script>
+<script src="{{ static_url("js/jquery.timeago.js") }}"></script>
+<script src="{{ static_url("bootstrap/js/bootstrap-datepicker.js") }}"></script>
+<script src="{{ static_url("js/jquery.ba-bbq.min.js") }}"></script>
+{% end %}
+
+
+{% block contents %}
+<div class="page-header">
+    {% set now = datetime.datetime.now() %}
+    <h1><a href="{{ reverse_url("pv", name) }}">{{name}}</a>
+        <small>As of {{ now.ctime() }} (<span class="timeago" title="{% raw now.isoformat() %}"></span>)</small>
+    </h1>
+</div>
+
+<div class="row">
+    <div class="span3">
+        <div class="row">
+            <h2>Subscription Info</h2>
+            PV <strong>{{ name }}</strong> is being 
+            {% if mode['mode'] == 'Monitor' %}
+            <strong>monitored</strong> with a <strong>delta of {{ mode['delta'] }}</strong> and
+                {% if mode['max_freq'] %}
+                    a <strong>maximum frequency of {{ mode['max_freq'] }}</strong> 
+                {% else %}
+                    <strong>no maximum frequency</strong>
+                {% end %}
+            {% else %} {# scan #}
+            <strong>scanned</strong> with a <strong>period of {{ mode['period'] }} seconds</strong>
+            {% end %}
+               since <abbr class="timeago" title="{{ since.isoformat() }}">{{since}}</abbr>
+           </div>
+
+        <div class="row">
+            <h2>Connection History</h2>
+            <ul>
+                {% for status in statuses %}
+                    {% set d = datetime.datetime.fromtimestamp(status['timestamp'] /1e6) %}
+                    {% if status['connected'] %}
+                        {% set color = 'green' %}
+                    {% else %}
+                        {% set color = 'red' %}
+                    {% end %}
+                    <li><span class="timeago" title="{{d.isoformat()}}" style="color:{{color}};">{{ d.ctime() }}</span></li>
+                {% end %}
+            </ul>
+        </div>
+
+        <div class="row">
+            <h2>Value Filters</h2>
+            <form  action="#tab-values" method="get">
+                <div class="accordion" id="accordion2">
+                    <div class="accordion-group">
+                        <div class="accordion-heading">
+                            <a class="accordion-toggle" data-toggle="collapse" 
+                             data-parent="#accordion2" href="#collapseLimit">Limit</a>
+                        </div>
+                        <div id="collapseLimit" class="accordion-body collapse">
+                            <div class="accordion-inner">
+                                <select class="input-mini" name="limit" id="limit-select">
+                                    {% for i in ("10", "20", "50", "100") %}
+                                        {% if i == limit %}
+                                            <option selected="selected">{{ i }}</option>
+                                        {% else %}
+                                            <option>{{ i }}</option>
+                                        {% end %}
+                                    {% end %}
+                                </select>
+                                <span class="help-inline">How many entries to show</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="accordion-group">
+                        <div class="accordion-heading">
+                            <a class="accordion-toggle" data-toggle="collapse" 
+                             data-parent="#accordion2" href="#collapseDates">Dates</a>
+                        </div>
+                        <div id="collapseDates" class="accordion-body collapse">
+                            <div class="accordion-inner">
+                                <div class="form-inline">
+                                    <i class="icon-fast-backward" title="-1 day"></i>
+                                    <i class="icon-fast-forward" title="+1 day"></i>
+                                    <input type="text" class="datepicker input-small" id="from_date" placeholder="From..."/> 
+                                    <input type="text" class="input-mini"  id="from_time" value="13:00" title="Initial time" />
+                                    <i class="icon-backward" title="-1 hour"></i>
+                                    <i class="icon-time" title="Now"></i>
+                                    <i class="icon-forward" title="+1 hour"></i>
+                                </div>
+                                <div class="form-inline"> 
+                                    <i class="icon-fast-backward" title="-1 day"></i>
+                                    <i class="icon-fast-forward" title="+1 day"></i>
+                                    <input type="text" class="datepicker input-small" id="to_date" placeholder="Until..."/> 
+                                    <input type="text" class="input-mini" id="to_time" value="14:00" title="End time"/>
+                                    <i class="icon-backward" title="-1 hour"></i>
+                                    <i class="icon-time" title="Now"></i>
+                                    <i class="icon-forward" title="+1 hour"></i>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                {% for (cat, fs) in available_fields.items() %}
+                    <div class="accordion-group">
+                        <div class="accordion-heading">
+                            <a class="accordion-toggle" data-toggle="collapse" 
+                                data-parent="#accordion2" href="#collapse{{cat}}">Fields ({{cat}})</a>
+                        </div>
+                        <div id="collapse{{cat}}" class="accordion-body collapse in">
+                            <div class="accordion-inner">
+                                <div  id="checkboxes">
+                                    <h3>{{ cat }}</h3> 
+                                    <div class="btn-group">
+                                        <a class="btn select-all"><i class="icon-ok-circle"></i> All</a>
+                                        <a class="btn deselect-all"><i class="icon-remove-circle"></i> None</a>
+                                    </div>
+
+                                    {% for f in fs %}
+                                        <label class="checkbox">
+                                            {% if f in fields %}
+                                                <input type="checkbox" checked="checked" name="field" value="{{f}}" />
+                                            {% else %}
+                                                <input type="checkbox" name="field" value="{{f}}" />
+                                            {% end %}
+                                            {{f}}
+                                        </label>
+                                    {% end %}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    {% end %}
+                </div>
+
+
+                <button class="btn" type="submit">Update</button>
+
+            </form>
+        </div>
+
+    </div>
+    <div class="span9">
+        <h2>Values
+            <small>
+                <a href="#" id="values-seemore"><span class="badge"><i class="icon-plus icon-white" title="Get more"></i></span></a>
+                <a href="#" id="values-seeless"><span class="badge"><i class="icon-minus icon-white" title="Get less"></i></span></a>
+                <a href="#" id="values-nextpage"><span class="badge"><i class="icon-chevron-right icon-white" title="Next page"></i></span></a>
+                <a href="#" id="values-prevpage"><span class="badge"><i class="icon-chevron-left icon-white" title="Previous page"></i></span></a>
+            </small></h2>
+        <table class="table table-striped table-bordered" id="valuestable">
+            <thead>
+                <tr>
+                    {% for field in fields %}
+                    <th class="{{field}}_col">{{ field }}</th>
+                    {% end %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for value in values %}
+                <tr>
+                    {% for field in fields %}
+                            {% if field == 'timestamp' %}
+                                
+                                {% set dt = datetime.datetime.fromtimestamp(value[field]) %}
+                                <td isodate="{{ dt.isoformat() }}" title="{{ dt.isoformat(' ') }}">
+                                    {% if value["value"] is None %}
+                                        <span title="PV was disconnected" class="badge badge-error">!</span>
+                                    {% end %}
+                                    {{value[field]}}</td>
+                            {% else %}
+                                <td>{{value[field]}}</td>
+                            {% end %}
+                    {% end %}
+                    </tr>
+                {% end %}
+                </tbody>
+                <tfoot>
+                    <tr>
+                        {% for field in fields %}
+                        <th>{{ field }}</th>
+                        {% end %}
+                    </tr>
+                </tfoot>
+            </table>
+            <script src="{{ static_url("js/pv/pv.js") }}"></script>
+    </div>
+</div>
+
+
+{% end %}
+
