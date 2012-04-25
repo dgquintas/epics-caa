@@ -1,10 +1,6 @@
 import logging
 import json
-
-try:
-    from collections import namedtuple 
-except ImportError:
-    from caa.utils.namedtuple import namedtuple
+from collections import Mapping
 
 logger = logging.getLogger('caa')
 
@@ -42,6 +38,13 @@ class SubscriptionMode(object):
 
     def __repr__(self):
         return self.__str__()
+
+    @classmethod
+    def is_registered(cls, modename):
+        for m in cls.available_modes:
+            if modename == m.name:
+                return True
+        return False
 
 class _Monitor(dict, SubscriptionMode):
     name = 'Monitor'
@@ -84,19 +87,31 @@ class _Scan(dict, SubscriptionMode):
 SubscriptionMode.register(_Monitor)
 SubscriptionMode.register(_Scan)
 
-class ArchivedPV(dict):
-    __slots__ = ()
-    def __init__(self, name, mode, since):
-        dict.__init__(self, ( ('name', name), ('mode', mode), ('since', since) ))
+
+class ArchivedPV(Mapping):
+    def __init__(self, name, subscribed, mode=None, since=None, **kwargs):
+        self._d = {'name': name, 
+                   'subscribed': subscribed,
+                   'since': since}
+        if mode:
+            try:
+                mode = json.loads(mode)
+            except:
+                pass
+            self._d['mode'] = SubscriptionMode.parse(mode)
+
+    def __repr__(self):
+        return 'ArchivedPV(%r)' % self._d
+
+    def __len__(self):
+        return len(self._d)
+
+    def __iter__(self):
+        return iter(self._d)
+
+    def __getitem__(self, name):
+        return self._d[name]
 
     def __getattr__(self, name):
-        if name in self:
-            return self[name]
-        else:
-            super(ArchivedPV, self).__getattr__(name)
-
-
-
-
-
+        return self[name]
 

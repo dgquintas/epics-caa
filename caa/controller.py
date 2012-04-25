@@ -4,19 +4,17 @@ import json
 import logging
 import uuid
 import time 
-import fnmatch
 import datetime 
-import collections
-try:
-    from collections import namedtuple 
-except ImportError:
-    from caa.utils.namedtuple import namedtuple
+import itertools
+#try:
+#    from collections import namedtuple 
+#except ImportError:
+#    from caa.utils.namedtuple import namedtuple
 
-from caa import ArchivedPV, SubscriptionMode, datastore
+from caa import SubscriptionMode, datastore
 from tasks import Task, TimersPool, WorkersPool
-from caa.conf import settings
+from conf import settings
 
-import pycassa
 
 logger = logging.getLogger('controller')
 
@@ -30,7 +28,7 @@ def subscribe(pvname, mode):
     return res[0] if res else None
 
 def msubscribe(pvnames, modes):
-    datastore.save_pvs(pvnames, modes)
+    datastore.add_subscriptions(pvnames, modes)
 
     futures = []
     for pvname, mode in zip(pvnames, modes) :
@@ -51,8 +49,8 @@ def unsubscribe(pvname):
 
 def munsubscribe(pvnames):
     futures = []
-    pvs_dict = get_pvs(pvnames)
-    datastore.remove_pvs(pvs_dict.iterkeys())
+    pvs_dict = get_apvs(pvnames)
+    datastore.remove_subscriptions(pvs_dict.iterkeys())
     for pvname, apv in pvs_dict.iteritems():
         task = Task(pvname, epics_unsubscribe, pvname)
 
@@ -77,19 +75,21 @@ def get_values(pvname, fields=[], limit=100, from_date=None, to_date=None):
     """ Returns latest archived data for the PV as a list with at most ``limit`` elements """
     return datastore.read_values(pvname, fields, limit, from_date, to_date)
 
-def get_pv(pvname):
-    return get_pvs([pvname]).get(pvname)
+def get_apv(pvname):
+    return get_apvs([pvname]).get(pvname)
 
-def get_pvs(pvnames):
+def get_apvs(pvnames):
     return datastore.read_pvs(pvnames)
 
-def list_pvs(namepattern=None, modename=None, sort=False):
-    res = datastore.list_pvs(namepattern, modename)
-    if sort:
-        return sorted(res)
-    else:
-        return res
-    
+def list_archived(include_subscribed=True):
+    return datastore.list_archived(include_subscribed)
+
+def list_subscribed():
+    return datastore.list_subscribed()
+
+def list_by_mode(modename):
+    return datastore.list_by_mode(modename)
+
 
 ############################
 
@@ -116,26 +116,24 @@ def save_config():
     import cStringIO 
     from getpass import getuser
     from platform import uname
-
+    
     with closing(cStringIO.StringIO()) as out:
         # get a list of the ArchivedPV values 
-        all_pv_names = list_pvs()
-        apvs = get_pvs(all_pv_names).itervalues()
-        raw = []
-        for apv in apvs:
-            del apv['since']
-            raw.append(apv)
+        raw = [ {'name': apv.name, 'mode': apv.mode} \
+                for _, apv in list_subscribed() ]
         datestr = datetime.datetime.now().ctime()
         out.write("# Generated on %s by '%s' on '%s'\n" % (datestr, getuser(), uname()[1] ) )
         out.write(json.dumps(raw, indent=4))
 
         return out.getvalue()
 
+def get_settings():
+    return settings
 
 def shutdown():
     logger.info("Unsubscribing from all subscribed PVs...")
 
-    all_pvs = list_pvs()
+    all_pvs = (pvname for pvname, _ in list_subscribed())
     munsubscribe(all_pvs)
 
     if workers.running:
@@ -199,13 +197,16 @@ def epics_periodic(state, pvname, period):
     # get the pv's value
     pv = state.get('pv')
     if pv:
-        if pv.status == 1: # connected. This will block for CONTROLLER.epics_connection_timeout if not connected
+        if pv.connected:
             #generate the id for the update
             update_id = uuid.uuid1()
             data = _gather_pv_data(pv)
             datastore.save_update(update_id, **data) 
         else: # not connected
-            logger.warn("Ignoring non-connected PV '%s'", pvname)
+            logger.warn("Non-connected PV '%s'. Saving with 'null' value", pvname)
+            # save PV data with PV value as None/null
+            update_id = uuid.uuid1()
+            datastore.save_update(update_id, timestamp=time.time(), pvname=pvname, value=None) 
     else:
         logger.error("Missing data in 'state' for '%s'", pvname)
 
@@ -260,17 +261,15 @@ def connection_cb(pvname, conn, **kw):
     if not conn:
         # save PV data with PV value as None/null
         update_id = uuid.uuid1()
-        datastore.save_update(update_id, pvname=pvname, value=None) 
+        datastore.save_update(update_id, timestamp=time.time(), pvname=pvname, value=None) 
 
 def _gather_pv_data(pv):
-    to_consider = ('pvname', 'value', 'count', 'type', 'status', 'precision', 'units', 'severity', \
-                    'timestamp', 'access', 'host', 'upper_disp_limit', 'lower_disp_limit', \
-                    'upper_alarm_limit', 'lower_alarm_limit','upper_warning_limit', 'lower_warning_limit', \
-                    'upper_ctrl_limit', 'lower_ctrl_limit')
+    to_consider = itertools.chain.from_iterable(
+            settings.ARCHIVER['pvfields'].values())
     
     data = dict( (k, getattr(pv, k)) for k in to_consider)
-    dt = datetime.datetime.fromtimestamp(data['timestamp'])
-    data['datetime'] = dt.isoformat(' ')
+    #dt = datetime.datetime.fromtimestamp(data['timestamp'])
+    #data['datetime'] = dt.isoformat(' ')
     return data
 
 ##############################################################

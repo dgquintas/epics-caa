@@ -1,4 +1,4 @@
-"""
+""" 
 .. module:: DataStore
     :synopsis: Module responsible for all the data-persistence action.
 
@@ -7,20 +7,16 @@
 """
 
 import pycassa
-from pycassa.cassandra.ttypes import NotFoundException
 
 import logging
 import time
-import itertools
 import json
 import datetime
-import sys
-import fnmatch 
 import multiprocessing
 from collections import defaultdict
 
 from caa import SubscriptionMode, ArchivedPV
-from caa.conf import settings
+from conf import settings
 import caa.utils as utils
 
 logger = logging.getLogger('DataStore')
@@ -77,8 +73,8 @@ def create_schema(server, keyspace, replication_factor=1, recreate=False):
         # without cleaning after itself (ie, after a crash)
         logger.debug("Performing cleanup")
 
-        allpvs = list_pvs()
-        remove_pvs(allpvs)
+        allpvs = list_subscribed()
+        remove_subscriptions(allpvs)
     else: # keyspace doesn't exist. Create it
         #create it
         sm.create_keyspace(keyspace, 
@@ -99,21 +95,23 @@ def create_schema(server, keyspace, replication_factor=1, recreate=False):
 
         # pvs: {
         #   pvname: {
-        #       'mode': mode name
-        #       '<mode_arg_1>': serialized value 
-        #       '<mode_arg_2>': serialized value
-        #       etc
-        #       'since': timestamp (long)
+        #       'subscribed': <bool>
+        #       if 'subscribed':
+        #           'modename': mode name
+        #           'mode': jsoned dict repr of the mode
+        #           'since': timestamp (long)
         #   }
         sm.create_column_family(keyspace, 'pvs', 
                 comparator_type=pycassa.UTF8_TYPE, 
                 default_validation_class=pycassa.UTF8_TYPE, 
                 key_validation_class=pycassa.UTF8_TYPE)
-        sm.alter_column(keyspace, 'pvs', 'mode', pycassa.UTF8_TYPE)
+        sm.alter_column(keyspace, 'pvs', 'subscribed', pycassa.BOOLEAN_TYPE)
         sm.alter_column(keyspace, 'pvs', 'since', pycassa.LONG_TYPE)
-        # We create a secondary index on "mode" to be able to retrieve
-        # PVs by their subscription mode
-        sm.create_index(keyspace, 'pvs', 'mode', pycassa.UTF8_TYPE, index_name='mode_index')
+
+        sm.create_index(keyspace, 'pvs', 'subscribed', pycassa.BOOLEAN_TYPE, 
+                index_name='subscription_index')
+        sm.create_index(keyspace, 'pvs', 'modename', pycassa.UTF8_TYPE, 
+                index_name='mode_index')
 
         #########################
         ########### UPDATES
@@ -174,76 +172,66 @@ def save_update(update_id, pvname, value, **extra):
 
     _cf('update_timeline').insert(pvname, {ts_ms: update_id})
 
-
 def save_conn_status(pvname, connected):
     ts = _get_timestamp_ms() 
     d = {ts: connected}
     logger.debug("Updating connection status for '%s' to '%s'", pvname, connected)
     _cf('statuses').insert(pvname, d)
 
-def save_pvs(pvnames, modes):
-    """ 
-        Register the given PVs with the system. 
-
-        :param pvnames: Collection of PV names.
-        :param modes: Collection of the corresponding subscription modes, 
-        instances of :class:`SubscriptionMode` 
-    """
+def add_subscriptions(pvnames, modes):
     if len(pvnames) != len(modes):
         raise ValueError("Argument sizes don't match")
 
     b = _cf('pvs').batch()
 
-    for pvname,mode in zip(pvnames, modes):
-        ts = _get_timestamp_ms() 
-        d = {'since': ts} 
+    for pvname, mode in zip(pvnames, modes):
+        modename = mode['mode']
+        mode_jsoned = json.dumps(mode)
 
-        # for each of the mode values, ensure it's 
-        # in str form 
-        mode_jsoned = dict( (k, json.dumps(v)) for k,v in mode.iteritems() ) 
-        d.update(mode_jsoned)
-
-        logger.debug("Saving pv subscription '(%s, %s)'", pvname, d)
-
+        d = {'modename': modename, 'mode': mode_jsoned, 
+             'since': _get_timestamp_ms(), 'subscribed': True} 
+        logger.debug("Adding subscription to '%s' with '%s'", pvname, d)
         b.insert(pvname, d)
     b.send()
 
-
-
-###### REMOVERS ######################
-def remove_pvs(pvnames):
-    if not utils.is_non_str_iterable(pvnames):
-        raise TypeError("The argument isn't a collection of PV names")
+def remove_subscriptions(pvnames):
+    """ Sets all PVs in `pvnames` to the single set of columns `cols` """
     b = _cf('pvs').batch()
+    newcols = {'subscribed': False}
     for pvname in pvnames:
-        logger.info("Removing PV '%s'", pvname)
-        b.remove(pvname)
+        logger.info("Updating PV '%s' to '%s'", pvname, newcols)
+        b.insert(pvname, newcols)
     b.send()
 
 ############### READERS ###########################
 
-#XXX: right now, get_indexed_slices and get_range return all columns
-# there doesnt seem to be a way to not return any column. Instead of
-# picking an arbitrary column 
-def list_pvs(namepattern, modename):
-    if modename:
-        jsoned_mode_name = json.dumps(modename)
-        expr = pycassa.index.create_index_expression('mode', jsoned_mode_name)
+def list_archived(include_subscribed):
+    if include_subscribed: # ie, all
+        rowsgen = _cf('pvs').get_range()
+    else: # return only archived but not subscribed PVs
+        expr = pycassa.index.create_index_expression('subscribed', False)
         cls = pycassa.index.create_index_clause([expr], count=2**31)
         rowsgen = _cf('pvs').get_indexed_slices(cls)
-    else:
-        rowsgen = _cf('pvs').get_range()
+    return ((k, ArchivedPV(k, **v)) for k,v in rowsgen)
 
-    # filter by name
-    if namepattern:
-        return ( pvname for pvname, _ in rowsgen if fnmatch.fnmatch(pvname, namepattern) )
-    else:
-        return ( pvname for pvname, _ in rowsgen )
+def list_subscribed():
+    expr = pycassa.index.create_index_expression('subscribed', 'true')
+    cls = pycassa.index.create_index_clause([expr], count=2**31)
+    rowsgen = _cf('pvs').get_indexed_slices(cls)
+    return ((k, ArchivedPV(k, **v)) for k,v in rowsgen)
+
+def list_by_mode(modename):
+    if not SubscriptionMode.is_registered(modename):
+        raise ValueError("'%s' is not a valid mode" % modename)
+
+    expr = pycassa.index.create_index_expression('modename', modename)
+    cls = pycassa.index.create_index_clause([expr], count=2**31)
+    rowsgen = _cf('pvs').get_indexed_slices(cls)
+    return ((k, ArchivedPV(k, **v)) for k,v in rowsgen)
 
 def read_status(pvname, limit, ini, end):
     ts_ini = ini and time.mktime(ini.timetuple()) * 1e6 or ''
     ts_end = end and time.mktime(end.timetuple()) * 1e6 or ''
-    
     try:
         statuses = _cf('statuses').get(pvname, \
                 column_count=limit, column_reversed=True, \
@@ -259,11 +247,13 @@ def read_pvs(pvnames):
         raise TypeError("The argument isn't a collection of PV names")
 
     def _parse(pvname, cols):
-        since = cols.pop('since')
-        # cols's remaining values (mode as a dict) are json'd 
-        mode_dict = dict( (k, json.loads(v)) for k,v in cols.iteritems() )
-        mode = SubscriptionMode.parse(mode_dict)
-        return ArchivedPV(pvname, mode, since)
+        subscribed = cols['subscribed']
+        if subscribed:
+            since = cols['since']
+            modedict = json.loads(cols['mode'])
+            mode = SubscriptionMode.parse(modedict)
+            return ArchivedPV(pvname, subscribed, mode, since)
+        return ArchivedPV(pvname, subscribed)
 
     pvrows = _cf('pvs').multiget(pvnames)
     pvs = dict( (pvname, _parse(pvname, cols)) \
@@ -293,7 +283,10 @@ def read_values(pvname, fields, limit, ini, end):
         for pv_data in updates.itervalues():
             out_data = {}
             for k in (fields or pv_data.keys()):
-                out_data[k] = json.loads(pv_data.get(k)) # if field not in pv, it'll be null
+                if k not in pv_data:
+                    logger.warning("Field '%s' not found in PV data '%s'", k, pv_data)
+                out_data[k] = json.loads(pv_data.get(k) or 'null') 
+
             res.append(out_data)
         return res
 
@@ -303,7 +296,7 @@ def read_values(pvname, fields, limit, ini, end):
     ts_ini = ini and time.mktime(ini.timetuple()) * 1e6 or ''
     ts_end = end and time.mktime(end.timetuple()) * 1e6 or ''
 
-    try:
+    try: 
         timeline = _cf('update_timeline').get(pvname, \
                 column_count=limit, column_reversed=True,\
                 column_start=ts_end, column_finish=ts_ini)
