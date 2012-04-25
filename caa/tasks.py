@@ -1,8 +1,7 @@
 import multiprocessing
-from multiprocessing import cpu_count, Process, current_process
+from multiprocessing import cpu_count, Process
 from multiprocessing.queues import SimpleQueue
 import threading
-import uuid
 import itertools
 from zlib import adler32
 try: 
