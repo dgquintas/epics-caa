@@ -49,7 +49,9 @@ class RootSubscriptionHandler(BaseHandler):
     def delete(self):
         # unsubscribe from all
         pvs = [pvname for pvname, _ in controller.list_subscribed()]
-        controller.munsubscribe(pvs)
+        futures = controller.munsubscribe(pvs)
+        results = dict( (pv, f.get()) for pv, f in zip(pvs, futures) )
+        self.win(results)
 
     def _subscribe(self):
         body_json = self.request.body
