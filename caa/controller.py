@@ -28,18 +28,26 @@ def subscribe(pvname, mode):
     return res[0] if res else None
 
 def msubscribe(pvnames, modes):
-    datastore.add_subscriptions(pvnames, modes)
+    current_subs = tuple(i[0] for i in list_subscribed())
+    newpvs = []
+    newmodes = []
 
     futures = []
-    for pvname, mode in zip(pvnames, modes) :
-        task = Task(pvname, epics_subscribe, pvname, mode)
-        futures.append(workers.request(task))
-        if mode.name == SubscriptionMode.Scan.name:
-            # in addition, add it to the timer so that it gets scanned
-            # periodically
-            periodic_task = Task(pvname, epics_periodic, pvname, mode.period)
-            timers.schedule(periodic_task, mode.period)
+    for pvname, mode in zip(pvnames, modes):
+        if pvname not in current_subs:
+            task = Task(pvname, epics_subscribe, pvname, mode)
+            futures.append(workers.request(task))
+            if mode.name == SubscriptionMode.Scan.name:
+                # in addition, add it to the timer so that it gets scanned
+                # periodically
+                periodic_task = Task(pvname, epics_periodic, pvname, mode.period)
+                timers.schedule(periodic_task, mode.period)
+            newpvs.append(pvname)
+            newmodes.append(mode)
+        else:
+            logger.warn("Already subscribed to '%s', ignoring", pvname)
 
+    datastore.add_subscriptions(newpvs, newmodes)
     return futures 
 
 
@@ -52,13 +60,17 @@ def munsubscribe(pvnames):
     pvs_dict = get_apvs(pvnames)
     datastore.remove_subscriptions(pvs_dict.iterkeys())
     for pvname, apv in pvs_dict.iteritems():
-        task = Task(pvname, epics_unsubscribe, pvname)
+        if apv['subscribed']:
+            task = Task(pvname, epics_unsubscribe, pvname)
 
-        if apv.mode.mode == SubscriptionMode.Scan.name:
-            # cancel timers 
-            timers.remove_task(task.name)
+            if apv.mode.mode == SubscriptionMode.Scan.name:
+                # cancel timers 
+                timers.remove_task(task.name)
 
-        futures.append(workers.request(task))
+            futures.append(workers.request(task))
+        else:
+            logger.warn("Tried to unsubscribe from non-subscribed PV '%s'. Ignored",
+                    pvname)
     return futures 
 
 def get_statuses(pvname, limit=10):
@@ -98,6 +110,7 @@ def load_config(configstr):
     
         Returns a list with the receipts of the restored subscriptions.
     """
+    
     receipts = []
     without_comments = [ line for line in configstr.splitlines() if not line.lstrip().startswith('#') ]
     jsondata = ''.join(without_comments)

@@ -197,7 +197,7 @@ def add_subscriptions(pvnames, modes):
 def remove_subscriptions(pvnames):
     """ Sets all PVs in `pvnames` to the single set of columns `cols` """
     b = _cf('pvs').batch()
-    newcols = {'subscribed': False}
+    newcols = {'subscribed': False, 'since': _get_timestamp_ms()}
     for pvname in pvnames:
         logger.info("Updating PV '%s' to '%s'", pvname, newcols)
         b.insert(pvname, newcols)
@@ -248,12 +248,12 @@ def read_pvs(pvnames):
 
     def _parse(pvname, cols):
         subscribed = cols['subscribed']
+        since = cols['since']
         if subscribed:
-            since = cols['since']
             modedict = json.loads(cols['mode'])
             mode = SubscriptionMode.parse(modedict)
             return ArchivedPV(pvname, subscribed, mode, since)
-        return ArchivedPV(pvname, subscribed)
+        return ArchivedPV(pvname, subscribed, since=since)
 
     pvrows = _cf('pvs').multiget(pvnames)
     pvs = dict( (pvname, _parse(pvname, cols)) \

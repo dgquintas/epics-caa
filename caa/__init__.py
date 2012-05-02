@@ -88,7 +88,7 @@ SubscriptionMode.register(_Monitor)
 SubscriptionMode.register(_Scan)
 
 
-class ArchivedPV(Mapping):
+class ArchivedPV(Mapping, dict):
     def __init__(self, name, subscribed, mode=None, since=None, **kwargs):
         self._d = {'name': name, 
                    'subscribed': subscribed,

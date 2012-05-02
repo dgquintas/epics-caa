@@ -1,29 +1,44 @@
 from handlers.base import BaseHandler
 import json 
-from tornado.ioloop import IOLoop
 import tornado.web
 
 from caa import controller, SubscriptionMode
 
 import logging
 import datetime 
-import fnmatch
 
 logger = logging.getLogger('server.caa.' + __name__)
 
 # XXX: this is kinda dirty. Maybe it should be handled independently of this server
-# controller.initialize()
+controller.initialize()
 
 TIMEOUT = 1
+
+class RootArchivesHandler(BaseHandler):
+    @tornado.web.addslash
+    def get(self):
+        self.win(dict(controller.list_archived()))
+
+class PVArchivesHandler(BaseHandler):
+    def get(self, pvname):
+        apv = controller.get_apv(pvname)
+        if apv:
+            self.win(apv)
+        else:
+            self.fail(msg="Unknown PV '%s'" % pvname, code=404)
+
+
+
 class RootSubscriptionHandler(BaseHandler):
     @tornado.web.addslash
     def get(self):
-        pvpattern = self.get_argument('pvname', '*')
-        mpattern = self.get_argument('mode', None)
-        pvnames = controller.list_pvs(pvpattern, mpattern)
-        apvs = controller.get_pvs(pvnames)
-        self.win(apvs or {})
-        
+        modename = self.get_argument('mode', None)
+        if modename:
+            apvs = dict(controller.list_by_mode(modename))
+        else:
+            apvs = dict(controller.list_subscribed())
+        self.win(apvs)
+
     def post(self):
         self._subscribe()
 
@@ -33,8 +48,8 @@ class RootSubscriptionHandler(BaseHandler):
 
     def delete(self):
         # unsubscribe from all
-        allpvs = controller.list_pvs()
-        controller.munsubscribe(allpvs)
+        pvs = [pvname for pvname, _ in controller.list_subscribed()]
+        controller.munsubscribe(pvs)
 
     def _subscribe(self):
         body_json = self.request.body
@@ -70,7 +85,7 @@ class RootSubscriptionHandler(BaseHandler):
 
 class PVSubscriptionHandler(BaseHandler):
     def get(self, pvname):
-        apv = controller.get_pv(pvname)
+        apv = controller.get_apv(pvname)
         if apv:
             self.win(apv)
         else:
@@ -78,8 +93,8 @@ class PVSubscriptionHandler(BaseHandler):
 
     def put(self, pvname):
         # modify if exists, ie, unsubscribe and resubscribe
-        apv = controller.get_pv(pvname)
-        if apv:
+        apv = controller.get_apv(pvname)
+        if apv and apv.subscribed:
             controller.unsubscribe(pvname)
 
         # at this point, subscribe no matter what: if we were
@@ -122,9 +137,8 @@ class PVSubscriptionHandler(BaseHandler):
 class RootStatusesHandler(BaseHandler):
     @tornado.web.addslash
     def get(self):
-        pvnameglob = self.get_argument('pvname', None)
         limit = self.get_argument('limit', 1)
-        pvnames = controller.list_pvs(pvnameglob)
+        pvnames = [pvname for pvname, _ in controller.list_subscribed()]
         statuses = [ controller.get_statuses(pvname, limit) for pvname in pvnames ]
         self.win(statuses)
 
@@ -140,33 +154,28 @@ class PVStatusesHandler(BaseHandler):
 
 ##########################################################################
 
-class RootValuesHandler(BaseHandler):
-    @tornado.web.addslash
-    def get(self):
-        pvnameglob = self.get_argument('pvname', default=None)
-        fields = self.get_arguments('field')
-        limit = int(self.get_argument('limit', default=1))
-        from_date = self.get_argument('from_date', default=None)
-        to_date = self.get_argument('to_date', default=None)
-
-        # transform from_date and to_date from epoch secs to datetime
-        if from_date:
-            from_date = datetime.datetime.fromtimestamp(float(from_date))
-        if to_date:
-            to_date = datetime.datetime.fromtimestamp(float(to_date))
-        
-        pvnames = controller.list_pvs(pvnameglob)
-        res = {}
-        for pvname in pvnames:
-            values_for_pv = controller.get_values(pvname, fields, limit, from_date, to_date) 
-            res[pvname] = values_for_pv
-
-        self.win(res)
+#class RootValuesHandler(BaseHandler):
+#    @tornado.web.addslash
+#    def get(self):
+#        fields = self.get_arguments('field')
+#        limit = int(self.get_argument('limit', default=1))
+#        from_date = self.get_argument('from_date', default=None)
+#        to_date = self.get_argument('to_date', default=None)
+#
+#        # transform from_date and to_date from epoch secs to datetime
+#        if from_date:
+#            from_date = datetime.datetime.fromtimestamp(float(from_date))
+#        if to_date:
+#            to_date = datetime.datetime.fromtimestamp(float(to_date))
+#        
+#        values = controller.get_values(pvname, fields, limit, from_date, to_date) 
+#
+#        self.win(values)
 
 class PVValuesHandler(BaseHandler):
     def get(self, pvname):
         fields = self.get_arguments('field')
-        limit = int(self.get_argument('limit', default=100))
+        limit = int(self.get_argument('limit', default=10))
         from_date = self.get_argument('from_date', default=None)
         to_date = self.get_argument('to_date', default=None)
 
@@ -175,17 +184,16 @@ class PVValuesHandler(BaseHandler):
             from_date = datetime.datetime.fromtimestamp(float(from_date))
         if to_date:
             to_date = datetime.datetime.fromtimestamp(float(to_date))
-        
         res = controller.get_values(pvname, fields, limit, from_date, to_date)
-        self.win(res if res else None)
+        self.win(res)
 
 ##########################################################################
 
 
-from contextlib import closing
 class ConfigHandler(BaseHandler):
     def get(self):
         cfg = controller.save_config()
+        self.set_header('Content-Type', 'application/json')
         self.write(cfg)
 
     def put(self):
@@ -196,4 +204,9 @@ class ConfigHandler(BaseHandler):
         except Exception as e:
             self.fail(e)
 
+class SettingsHandler(BaseHandler):
+    def get(self, section):
+        settings = controller.get_settings()
+        section_settings = getattr(settings, section, None)
+        self.win(section_settings)
 

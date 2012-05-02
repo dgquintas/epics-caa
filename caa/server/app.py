@@ -4,9 +4,12 @@ import tornado.httpserver
 import tornado.ioloop
 import tornado.web
 from tornado.options import options
+from tornado import autoreload
 
 from settings import settings
 from urls import url_patterns
+
+from caa import controller
 
 class TornadoApp(tornado.web.Application):
     def __init__(self):
@@ -18,7 +21,17 @@ def main():
     http_server = tornado.httpserver.HTTPServer(app)
     http_server.listen(options.port)
     print 'Tornado server started on port %s' % options.port
-    tornado.ioloop.IOLoop.instance().start()
+    if settings['debug']:
+        def f():
+            controller.shutdown()
+            reload(controller)
+        autoreload.add_reload_hook(f)
+    try:
+        tornado.ioloop.IOLoop.instance().start()
+    finally:
+        controller.shutdown()
+
+
 
 if __name__ == "__main__":
     main()

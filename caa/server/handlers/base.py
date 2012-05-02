@@ -23,7 +23,7 @@ class BaseHandler(tornado.web.RequestHandler):
     """
 
     def fail(self, msg, code=400, response=None):
-        d = envelope(False, code, msg, response)
+        d = envelope(False, code, str(msg), response)
         self.write(d)
 
     def win(self, results):
@@ -37,7 +37,7 @@ class BaseHandler(tornado.web.RequestHandler):
             tbstr = ''.join(tb) 
             exception = traceback.format_exception_only(trace[0], trace[1])
             response = tbstr
-            msg = msg
+            msg = ''.join(exception)
         else:
             response = None
             msg = "Unspecified error ocurred"

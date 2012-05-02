@@ -1,0 +1,34 @@
+- Export methods to
+    * Subscribe to a pv (mode)
+    * Unsubscribe from a pv
+    * get pv info     
+    * get pv status   
+        ( join these two into a unique call? )
+    * export config (file download)
+    * import config (file upload)
+    * stop it 
+    * get values for pv (limit, from and to date)
+    
+- present a web interface 
+
+How to pass values to the methods
+---------------------------------
+Two ways: in the URL itself as arguments
+          via PUT in json format
+The first one is probably easier to implement for everybody
+and we don't really need json (no long or complex lists
+of arguments).
+
+How to output data from the server
+-----------------------------------
+In JSON format. 
+
+
+Signaling success/failure
+--------------------------
+At the HTTP level, all api methods should always return code 200.
+Otherwise something is wrong at the http server level. 
+At the application level, a JSON "list" list returned. Its first element
+signals success of failure with strings "ok" and "fail" respectively. 
+In the event of an "ok", the second element will contain the result.
+Upon "fail", it'd contain information about the error. 

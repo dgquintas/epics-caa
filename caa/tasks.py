@@ -163,7 +163,7 @@ class TimerThread(threading.Thread):
 
                 elif action == self.ADD_TASK_TOKEN:
                     task, period, callback = args
-                    logger.debug("Adding task '%s' with period '%f'", 
+                    logger.debug("Adding task '%s' with period '%s'", 
                             task, period)
                     self.tasks[task.name] = [t, task, period, callback] 
                 else:
@@ -235,7 +235,7 @@ class TimersPool(object):
 
         q = self._get_queue_for(task.name)
 
-        logger.debug("Submitting periodic request '%s' with period '%f's", task, period)
+        logger.debug("Submitting periodic request '%s' with period '%s's", task, period)
         q.put((TimerThread.ADD_TASK_TOKEN, (task, period, callback) ))
 
     def remove_task(self, taskname):

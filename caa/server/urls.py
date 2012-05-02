@@ -1,11 +1,18 @@
 from handlers import controller, server 
 from tornado.web import URLSpec
 
+PVNAME = r"[a-zA-Z0-9:_\.]+"
+
 url_patterns = [
+    URLSpec(r"^/archives/?$", controller.RootArchivesHandler, name='arch-root'),
+    # GET: List all archived PVs
+    URLSpec(r"^/archives/(?P<pvname>"+PVNAME+")$", controller.PVArchivesHandler, name='arch-pv'),
+    # GET: 
+    # Return information on the archived PV
+
     URLSpec(r"^/subscriptions/?$", controller.RootSubscriptionHandler, name='subs-root'),
     # GET: List of subscribed pvs
     # Optional query arguments: 
-    #   pvname: only pvs matching this glob
     #   mode: only pvs with this mode (refer to the mode by name)
     
     # PUT:
@@ -23,7 +30,7 @@ url_patterns = [
     # DELETE:
     # unsubscribe from all pvs
     
-    URLSpec(r"^/subscriptions/(?P<pvname>.+)$", controller.PVSubscriptionHandler, name='subs-pv'),
+    URLSpec(r"^/subscriptions/(?P<pvname>"+PVNAME+")$", controller.PVSubscriptionHandler, name='subs-pv'),
     # GET: 
     # Return information on the PV's subscription. 
     # Eg:
@@ -57,16 +64,15 @@ url_patterns = [
     # GET:
     # Return the status of all the subscribed PVs
     # query arguments:
-    # pvname: name glob
     # limit: number of status entries to return per PV. 1 (latest) by default
 
-    (r"^/statuses/(?P<pvname>.+)$", controller.PVStatusesHandler),
+    (r"^/statuses/(?P<pvname>"+PVNAME+")$", controller.PVStatusesHandler),
     # GET:
     # Return the status of the given PV
     # query arguments: 
     # limit: number of status entries to return. 10 by default
 
-    (r"^/values/?$", controller.RootValuesHandler),
+    #(r"^/values/?$", controller.RootValuesHandler),
     # GET: 
     # Return the last <limit> (default 1) values for all subscribed PV's. If <pvname>
     # glob present, return only those PV's whose name match it.
@@ -78,13 +84,13 @@ url_patterns = [
     # * [field, ... ]
     # * [limit=1]
     
-    (r"^/values/(?P<pvname>.+)$", controller.PVValuesHandler),
+    (r"^/values/(?P<pvname>"+PVNAME+")$", controller.PVValuesHandler),
     # GET:
     # Return values for <pvname>.
     #
     # query arguments:
     # [field, ...]
-    # [limit=100]
+    # [limit=10]
     # [from_date]
     # [to_date]
 
@@ -95,6 +101,12 @@ url_patterns = [
     # 
     # PUT:
     # loads the configuration given in the POST body
+    
+##################################
+
+    (r"^/settings/(?P<section>\w+)$", controller.SettingsHandler),
+    # GET:
+    # returns engine settings for the given section
 
 
 ##################################
