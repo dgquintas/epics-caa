@@ -59,7 +59,8 @@ def munsubscribe(pvnames):
     futures = []
     pvs_dict = get_apvs(pvnames)
     datastore.remove_subscriptions(pvs_dict.iterkeys())
-    for pvname, apv in pvs_dict.iteritems():
+    for pvname in pvnames: # to maintain the order
+        apv = pvs_dict[pvname]
         if apv['subscribed']:
             task = Task(pvname, epics_unsubscribe, pvname)
 

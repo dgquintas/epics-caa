@@ -54,23 +54,24 @@ def result_handler(fromworkers_q, pending_futures):
             if not task: # got sentinel
                 break
 
-            taskid, result = task
-            pending_futures[taskid]._set(result)
+            futureid, result = task
+            pending_futures[futureid]._set(result)
 
         while pending_futures: # flush remaining
             task = get()
             if not task: # ignore extra sentinel
                continue 
 
-            taskid, result = task
-            pending_futures[taskid]._set(result)
+            futureid, result = task
+            pending_futures[futureid]._set(result)
 
         logger.info("Result handler thread exiting...")
 
 
 # based on multiprocessing.pool.ApplyResult
 class TaskFuture(object):
-    def __init__(self, callback, pending_futures):
+    def __init__(self, taskname, callback, pending_futures):
+        self._taskname = taskname
         self._cond = threading.Condition( threading.Lock() )
         self._ready = False
         self._callback = callback
@@ -79,7 +80,11 @@ class TaskFuture(object):
         self._pending_futures[self._taskid] = self
 
     @property
-    def taskid(self):
+    def taskname(self):
+        return self._taskname
+
+    @property
+    def futureid(self):
         return self._taskid 
 
     @property
@@ -92,8 +97,8 @@ class TaskFuture(object):
         return self._success
 
     def __repr__(self):
-        return "TaskResult(taskid=%d, ready=%s, callback=%s)" % \
-                (self.taskid, self.ready, self._callback)
+        return "TaskResult(futureid=%d, ready=%s, callback=%s)" % \
+                (self.futureid, self.ready, self._callback)
 
     def wait(self, timeout=None):
         self._cond.acquire()
@@ -349,11 +354,11 @@ class WorkersPool(object):
         # by the worker (some Managed instance, shared
         # by the Future and the worker process)
         # candidate: 
-        taskfuture = TaskFuture(callback, self._pending_futures)
+        taskfuture = TaskFuture(task.name, callback, self._pending_futures)
         # calculate the hash for the task based on its name
         h = adler32(task.name) % self.num_workers
         toworker_q = self._toworkers_qs[h]
-        toworker_q.put((taskfuture.taskid, task)) 
+        toworker_q.put((taskfuture.futureid, task)) 
 
         if not self._workers[h].is_alive():
             msg = "Worker '%d' has died!" % h
