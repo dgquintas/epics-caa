@@ -27,8 +27,6 @@ class PVArchivesHandler(BaseHandler):
         else:
             self.fail(msg="Unknown PV '%s'" % pvname, code=404)
 
-
-
 class RootSubscriptionHandler(BaseHandler):
     @tornado.web.addslash
     def get(self):
@@ -50,7 +48,7 @@ class RootSubscriptionHandler(BaseHandler):
         # unsubscribe from all
         pvs = [pvname for pvname, _ in controller.list_subscribed()]
         futures = controller.munsubscribe(pvs)
-        results = dict( (pv, f.get()) for pv, f in zip(pvs, futures) )
+        results = dict( (pvname, f.get(TIMEOUT)) for pvname, f in zip(pvs, futures) )
         self.win(results)
 
     def _subscribe(self):
@@ -68,18 +66,8 @@ class RootSubscriptionHandler(BaseHandler):
                 modes.append(SubscriptionMode.parse(subscr_dict['mode']))
 
             futures = controller.msubscribe(pvnames, modes)
-            results = [f.get(TIMEOUT) for f in futures]
-            if all(results):
-                res_list = [ {'pvname': pvname, 'mode': mode} \
-                        for pvname, mode in zip(pvnames, modes) ]
-                res_list_json = json.dumps(res_list)
-                self.win(res_list_json)
-            else:
-                res_list = [ {'pvname': pvname, 'mode': mode} \
-                        for pvname, mode, result in zip(pvnames, modes, results) \
-                        if not result ]
-                res_list_json = json.dumps(res_list)
-                self.fail("Couldn't subscribe", res_list_json)
+            results = dict( (pvname, f.get(TIMEOUT) for pvname, f in zip(pvnames, futures)) )
+            self.win(results)
         except Exception as e:
             logger.exception(e)
             self.fail(str(e))
