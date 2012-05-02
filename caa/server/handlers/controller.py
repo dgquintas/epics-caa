@@ -66,7 +66,7 @@ class RootSubscriptionHandler(BaseHandler):
                 modes.append(SubscriptionMode.parse(subscr_dict['mode']))
 
             futures = controller.msubscribe(pvnames, modes)
-            results = dict( (pvname, f.get(TIMEOUT) for pvname, f in zip(pvnames, futures)) )
+            results = dict( (pvname, f.get(TIMEOUT)) for pvname, f in zip(pvnames, futures) ) 
             self.win(results)
         except Exception as e:
             logger.exception(e)
