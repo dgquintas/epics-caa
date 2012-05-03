@@ -369,21 +369,20 @@ class WorkersPool(object):
 
     def request(self, task, callback=None):
         """ Submit a :class:`Task` instance to be run by one of the processes """
-        self._req_lock.acquire()
-        logger.debug("Acquired request lock for task '%s'", task)
-        if not self._running:
-            self.start()
+        with self._req_lock:
+            logger.debug("Acquired request lock for task '%s'", task)
+            if not self._running:
+                self.start()
 
-        # submit subscription request to queue
-        if not self._stopping:
-            # don't accept requests if we are shutting down
-            logger.debug("Submitting request '%s'", task)
-            taskfuture = self._submit(task, callback)
-        else: 
-            logger.warn("Request for '%s' received while shutting down", task)
-            taskfuture = None
+            # submit subscription request to queue
+            if not self._stopping:
+                # don't accept requests if we are shutting down
+                logger.debug("Submitting request '%s'", task)
+                taskfuture = self._submit(task, callback)
+            else: 
+                logger.warn("Request for '%s' received while shutting down", task)
+                taskfuture = None
 
-        self._req_lock.release()
         logger.debug("Released request lock for task '%s'", task)
         return taskfuture 
 
