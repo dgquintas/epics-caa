@@ -1,15 +1,23 @@
 #!/usr/bin/env python
 
 import tornado.httpserver
-import tornado.ioloop
+from tornado.ioloop import IOLoop
 import tornado.web
 from tornado.options import options
 from tornado import autoreload
+
+import signal
 
 from settings import settings
 from urls import url_patterns
 
 from caa import controller
+
+def keyboard_shutdown(signum, frame):
+    controller.shutdown()
+    IOLoop.instance().stop()
+
+signal.signal(signal.SIGINT, keyboard_shutdown)
 
 class TornadoApp(tornado.web.Application):
     def __init__(self):
@@ -27,7 +35,7 @@ def main():
             reload(controller)
         autoreload.add_reload_hook(f)
     try:
-        tornado.ioloop.IOLoop.instance().start()
+        IOLoop.instance().start()
     finally:
         controller.shutdown()
 

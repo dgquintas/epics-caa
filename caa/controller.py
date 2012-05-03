@@ -4,6 +4,7 @@ import json
 import logging
 import uuid
 import time 
+import signal
 import datetime 
 import itertools
 #try:
@@ -14,7 +15,6 @@ import itertools
 from caa import SubscriptionMode, datastore
 from tasks import Task, TimersPool, WorkersPool
 from conf import settings
-
 
 logger = logging.getLogger('controller')
 
@@ -116,13 +116,12 @@ def load_config(configstr):
     without_comments = [ line for line in configstr.splitlines() if not line.lstrip().startswith('#') ]
     jsondata = ''.join(without_comments)
     decoded_l = json.loads(jsondata)
+    names = []
+    modes = []
     for item in decoded_l:
-        mode_dict = item['mode']
-        name = item['name']
-        mode = SubscriptionMode.parse(mode_dict)
-        receipt = subscribe(name, mode)
-        receipts.append(receipt)
-    return receipts
+        names.append(item['name'])
+        modes.append(SubscriptionMode.parse(item['mode']))
+    return msubscribe(names, modes)
 
 def save_config():
     """ Save current subscription state. """
@@ -150,11 +149,10 @@ def shutdown():
     all_pvs = (pvname for pvname, _ in list_subscribed())
     munsubscribe(all_pvs)
 
-    if workers.running:
-        workers.stop()
     if timers.running:
         timers.stop()
-
+    if workers.running:
+        workers.stop()
 
     logger.info("Shutdown completed")
 
@@ -186,7 +184,11 @@ def epics_subscribe(state, pvname, mode):
             auto_monitor=sub_mask
             )
     pv.mode = mode
-    pv.wait_for_connection()
+    connected = pv.wait_for_connection()
+    if not connected:
+        logger.warn("Couldn't connect PV '%s' upon subscription", pvname)
+        connection_cb(pvname, False)
+
 
     state['pv'] = pv
     return True # needed to signal that the subscription req has been completed.
