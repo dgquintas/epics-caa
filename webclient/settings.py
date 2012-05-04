@@ -14,7 +14,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 define("port", default=9999, help="run on the given port", type=int)
 define("config", default=None, help="tornado config file")
 define("debug", default=False, help="debug mode")
-define("caa_server", type=str, help="host and port of the CAA server")
+define("caa_server", type=str, help="host and port of the CAA server", default='http://localhost:8888')
 tornado.options.parse_command_line()
 
 MEDIA_ROOT = path(ROOT, 'media')
