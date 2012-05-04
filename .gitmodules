@@ -1,3 +1,0 @@
-[submodule "conf"]
-	path = conf
-	url = git://github.com/dgquintas/python-tiny-conf.git
