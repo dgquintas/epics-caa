@@ -13,6 +13,7 @@ import logging
 logger = logging.getLogger('boilerplate.' + __name__)
 
 baseurl = options.caa_server
+logger.info("Using '%s' as the archiver's URL", baseurl)
 
 config = settings.WEBCLIENT
 
@@ -56,12 +57,11 @@ class BaseHandler(tornado.web.RequestHandler):
 
 class RootHandler(BaseHandler):
     def get(self):
-        #response = caa_fetch('/subscriptions/') 
         response = caa_fetch('/archives/') 
         body = json.loads(response.body)
-        all_apvs = body['response'].values()
 
-        subscribed_apvs = [apv for apv in all_apvs if apv['subscribed']]
+        all_apvs = sorted(body['response'].values(), key=operator.itemgetter('name'))
+        subscribed_apvs = (apv for apv in all_apvs if apv['subscribed'])
 
         response = caa_fetch('/statuses/')
         body = json.loads(response.body)
@@ -70,8 +70,8 @@ class RootHandler(BaseHandler):
         # of a single element (the last status). There'll be one sublist per
         # subscribed PV
         ss = dict((status[0]['pvname'], status[0]) for status in statuses if len(status) > 0) 
-        sorted_apvs = sorted(pvs_dict.values(), key=operator.itemgetter('name'))
-        self.render("frontpage.html", apvs=sorted_apvs, statuses=ss)
+        self.render("frontpage.html", subscribed_apvs=subscribed_apvs, all_apvs=all_apvs, 
+                statuses=ss)
 
 class PVHandler(BaseHandler):
     @tornado.web.addslash
@@ -120,12 +120,6 @@ class PVHandler(BaseHandler):
         self.render('pv.html', apv=apv, statuses=statuses, available_fields=available_fields, 
                 fields=fields, limit=limit, fromdate=fromdate, todate=todate, fromtime=fromtime, totime=totime,
                 values=values)
-
-    def delete(self, pvname):
-        response = caa_fetch('
-
-
- 
 
 class SubscriptionHandler(BaseHandler):
     def post(self):
