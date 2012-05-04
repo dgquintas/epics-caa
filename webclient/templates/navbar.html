@@ -2,7 +2,7 @@
 <script src="{{ static_url("js/jquery.validate.js") }}"></script>
 <script src="{{ static_url("js/pv/navbar.js") }}"></script>
 
-<div class="modal hide fade" style="display: block; "id="myModal">
+<div class="modal hide fade" style="display: block;" id="subscription_modal">
     <div class="modal-header">
         <a class="close" data-dismiss="modal">×</a>
         <h3>PV Subscription</h3>
@@ -66,6 +66,27 @@
     </div>
 </div>
 
+<div class="modal hide fade" id="config_modal">
+    <div class="modal-header">
+        <a class="close" data-dismiss="modal">×</a>
+        <h3>Upload Configuration</h3>
+    </div>
+    <div class="modal-body"> 
+        <form enctype="multipart/form-data" id="config-form"
+              action="{{ reverse_url("config") }}" method="post">
+              <label>Only upload files with the proper formatting, as previously 
+                  returned by the <a href="{{ reverse_url('config') }}">Download</a> link</label>
+           <input class="input-file" type="file" name="configfile"/>
+           {% raw xsrf_form_html() %}
+        </form>
+    </div>
+   <div class="modal-footer">
+       <button type="submit" id="config-submit" class="btn btn-primary">Do it!</button>
+   </div>
+</div>
+
+
+
 <div class="navbar navbar-fixed-top">
   <div class="navbar-inner">
     <div class="container-fluid">
@@ -82,17 +103,17 @@
                   <a href="#" class="dropdown-toggle" data-toggle="dropdown">Actions<b class="caret"></b></a>
                   <ul class="dropdown-menu">
                       <li class="nav-header">Subscription</li>
-                      <li><a data-toggle="modal" href="#myModal">Create</a></li>
+                      <li><a data-toggle="modal" href="#subscription_modal">Create</a></li>
                       <li><a href="#foo">Remove</a></li>
                       <li><a href="#foo">Modify</a></li>
                   </ul>
               </li>
               <li class="dropdown">
-                  <a href="#" class="dropdown-toggle" data-toggle="dropdown">Explore<b class="caret"></b></a>
+                  <a href="#" class="dropdown-toggle" data-toggle="dropdown">Configuration<b class="caret"></b></a>
                   <ul class="dropdown-menu">
-                      <li class="nav-header">Explore</li>
-                      <li><a href="#foo">Registered PVs</a></li>
-                      <li><a href="#foo">Archived PVs</a></li>
+                      <li class="nav-header">Configuration</li>
+                      <li><a href="{{ reverse_url('config') }}">Download</a></li>
+                      <li><a data-toggle="modal" href="#config_modal">Upload</a></li>
                   </ul>
              </li>
           </ul>

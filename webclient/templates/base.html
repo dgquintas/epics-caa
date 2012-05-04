@@ -2,7 +2,8 @@
 <html lang="en"><head> 
         <meta http-equiv="content-type" content="text/html; charset=utf-8"> 
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        
+        {% block head %}
+        {% end %}
         <link href="{{ static_url("bootstrap/css/bootstrap.css") }}" rel="stylesheet">
         <style type="text/css">
             body {
@@ -14,11 +15,11 @@
             }
         </style>
         <link href="{{ static_url("bootstrap/css/bootstrap-responsive.css") }}" rel="stylesheet" />
-
         {% block styles %}
         {% end %}
 
-        <script src="{{ static_url("js/jquery.min.js") }}"></script>
+        <script src="{{ static_url("bootstrap/js/jquery.min.js") }}"></script>
+        <script src="{{ static_url("bootstrap/js/bootstrap.min.js") }}"></script>
         {% block scripts %}{% end %}
 
         <!-- Le styles -->
@@ -34,25 +35,6 @@
     <div class="container">
         {% block contents %} {%end%}
     </div><!--/.container-->
-
-
-            <!-- Le javascript
-        ================================================== -->
-        <!-- Placed at the end of the document so the pages load faster -->
-
-        <script src="{{ static_url("bootstrap/js/bootstrap-transition.js") }}"></script>
-        <script src="{{ static_url("bootstrap/js/bootstrap-alert.js") }}"></script>
-        <script src="{{ static_url("bootstrap/js/bootstrap-modal.js") }}"></script>
-        <script src="{{ static_url("bootstrap/js/bootstrap-dropdown.js") }}"></script>
-        <script src="{{ static_url("bootstrap/js/bootstrap-scrollspy.js") }}"></script>
-        <script src="{{ static_url("bootstrap/js/bootstrap-tab.js") }}"></script>
-        <script src="{{ static_url("bootstrap/js/bootstrap-tooltip.js") }}"></script>
-        <script src="{{ static_url("bootstrap/js/bootstrap-popover.js") }}"></script>
-        <script src="{{ static_url("bootstrap/js/bootstrap-button.js") }}"></script>
-        <script src="{{ static_url("bootstrap/js/bootstrap-collapse.js") }}"></script>
-        <script src="{{ static_url("bootstrap/js/bootstrap-carousel.js") }}"></script>
-        <script src="{{ static_url("bootstrap/js/bootstrap-typeahead.js") }}"></script>
-
 
     </body>
 </html>

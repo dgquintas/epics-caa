@@ -27,6 +27,16 @@ $(document).ready(function() {
 
 //////////////////////////////
 
+    $('button#subscribe-button').click( function() {
+        var pvname = $(this).attr('pvname');
+        var modal = $('div#subscription_modal');
+        $('input:text[name=pvname]',modal).val(pvname).prop('readonly', 'readonly');
+        modal.modal('show');
+    });
+
+
+//////////////////////////////
+
     $('.select-all').click( function(){
         var container = $(this).parents('div#checkboxes');
         container.find('[type=checkbox]').prop("checked", true);

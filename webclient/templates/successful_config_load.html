@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block scripts %}
+<script type="text/javascript">
+    $(document).ready(setTimeout(
+                function() {
+                    window.location.replace( "{{ reverse_url("root") }}" );
+                }, 1000));
+</script>
+{% end %}
+
+{% block contents %}
+<div class="row">
+    <div class="alert alert-success span4 offset4">
+        <h1><strong>Success!</strong></h1>
+        <p><big>Successfully loaded configuration</big></p>
+    </div>
+</div>
+<div class="row">
+    <div class="alert alert-information span4 offset4">
+        Redirecting to <a href="{{ reverse_url("root") }}">main page</a>...
+     </div>
+</div>
+
+{% end %}

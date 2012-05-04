@@ -13,4 +13,11 @@ $(document).ready( function() {
         form.submit();
     });
 
+    $("button#config-submit").click( function() {
+        var form = $("form#config-form");
+        form.submit();
+    });
+
+
+
 });

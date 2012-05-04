@@ -55,9 +55,12 @@ class BaseHandler(tornado.web.RequestHandler):
 
 class RootHandler(BaseHandler):
     def get(self):
-        response = caa_fetch('/subscriptions/') 
+        #response = caa_fetch('/subscriptions/') 
+        response = caa_fetch('/archives/') 
         body = json.loads(response.body)
-        pvs_dict = body['response']
+        all_apvs = body['response'].values()
+
+        subscribed_apvs = [apv for apv in all_apvs if apv['subscribed']]
 
         response = caa_fetch('/statuses/')
         body = json.loads(response.body)
@@ -66,21 +69,18 @@ class RootHandler(BaseHandler):
         # of a single element (the last status). There'll be one sublist per
         # subscribed PV
         statuses = dict((status[0]['pvname'], status[0]) for status in statuses) 
-        self.render("frontpage.html", apvs=pvs_dict.values(), statuses=statuses)
+        self.render("frontpage.html", all_apvs=all_apvs, subscribed_apvs=subscribed_apvs, statuses=statuses)
 
 class PVHandler(BaseHandler):
     @tornado.web.addslash
     def get(self, pvname):
-        response = caa_fetch('/subscriptions/' + pvname) 
+        response = caa_fetch('/archives/' + pvname) 
         body = json.loads(response.body)
         if not body['status']['success']:
             raise tornado.web.HTTPError( body['status']['code'], body['status']['message'] )
 
-        response = body['response']
-        since = datetime.fromtimestamp( response['since'] / 1e6 )
-        name = response['name']
-        mode = response['mode']
-
+        apv = body['response']
+        
         response = caa_fetch('/statuses/' + pvname) 
         body = json.loads(response.body)
         statuses = body['response']
@@ -115,9 +115,14 @@ class PVHandler(BaseHandler):
         body = json.loads(response.body)
         values = body['response']
  
-        self.render('pv.html', name=name, mode=mode, since=since, statuses=statuses, available_fields=available_fields, 
+        self.render('pv.html', apv=apv, statuses=statuses, available_fields=available_fields, 
                 fields=fields, limit=limit, fromdate=fromdate, todate=todate, fromtime=fromtime, totime=totime,
                 values=values)
+
+    def delete(self, pvname):
+        response = caa_fetch('
+
+
  
 
 class SubscriptionHandler(BaseHandler):
@@ -133,12 +138,12 @@ class SubscriptionHandler(BaseHandler):
                 delta = self.get_argument('delta')
                 max_freq = self.get_argument('max_freq', 0.0)
                 mode = {'mode': modename, 
-                        'delta': delta, 
-                        'max_freq': max_freq}
+                        'delta': float(delta), 
+                        'max_freq': float(max_freq)}
             elif modename == 'Scan':
                 period = self.get_argument('period')
                 mode = {'mode': modename,
-                        'period': period}
+                        'period': float(period)}
             else:
                 raise ValueError("Unknown mode name '%s'" % modename)
 
@@ -153,4 +158,28 @@ class SubscriptionHandler(BaseHandler):
         except:
             logger.exception("Error while processing subscription")
             raise
+
+
+
+class ConfigHandler(BaseHandler):
+    @tornado.web.addslash
+    def get(self):
+        response = caa_fetch('/config')
+        body = response.body
+        self.set_header('Content-Type', 'text/plain')
+        self.write(body)
+
+    def post(self):
+        # get the file submitted to us first
+        config = self.request.files.get('configfile')
+        config_contents = config[0]['body']
+        if config and len(config):
+            response = caa_fetch('/config', method='PUT', body=config_contents)
+        if self.check_response(response):
+            self.render('successful_config_load.html')
+        else:
+            self.render('unsuccessful_config_load.html', response=response, config=config_contents)
+
+
+
 

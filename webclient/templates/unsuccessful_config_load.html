@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block contents %}
+<div class="row">
+    <div class="alert alert-error span8 offset2">
+        <h1><strong>Fail!</strong>
+            <small>Couldn't load configuration</small></h1>
+        Please contact support attaching the following information:
+        <h2>Given configuration:</h2>
+        <pre>
+{{config}}
+        </pre>
+        
+        <p>
+        <h2>Request:</h2>
+        <pre>
+{{ request }}
+        </pre>
+        <h2>Response:</h2>
+        <pre>
+{{ response }}
+        </pre>
+        </p>
+
+    </div>
+</div>
+
+{% end %}

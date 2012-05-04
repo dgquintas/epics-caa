@@ -21,8 +21,13 @@
 {% block contents %}
 <div class="page-header">
     {% set now = datetime.datetime.now() %}
-    <h1><a href="{{ reverse_url("pv", name) }}">{{name}}</a>
+    <h1><a href="{{ reverse_url("pv", apv['name']) }}">{{apv['name']}}</a>
         <small>As of {{ now.ctime() }} (<span class="timeago" title="{% raw now.isoformat() %}"></span>)</small>
+        {% if apv['subscribed'] %}
+            <button class="btn btn-small btn-danger" id="unsubscribe-button" pvname={{apv['name']}}><i class="icon-remove icon-white"></i> Unsubscribe</button>
+        {% else %}
+            <button class="btn btn-small btn-success" id="subscribe-button" pvname={{apv['name']}}><i class="icon-ok icon-white"></i> Subscribe</button>
+        {% end %}
     </h1>
 </div>
 
@@ -30,20 +35,28 @@
     <div class="span3">
         <div class="row">
             <h2>Subscription Info</h2>
-            PV <strong>{{ name }}</strong> is being 
-            {% if mode['mode'] == 'Monitor' %}
-            <strong>monitored</strong> with a <strong>delta of {{ mode['delta'] }}</strong> and
-                {% if mode['max_freq'] %}
-                    a <strong>maximum frequency of {{ mode['max_freq'] }}</strong> 
-                {% else %}
-                    <strong>no maximum frequency</strong>
+            {% set since = datetime.datetime.fromtimestamp(apv['since'] / 1e6 ) %}
+            {% if apv['subscribed'] %}
+                PV <strong>{{ apv['name'] }}</strong> is 
+                <span class="label label-success">subscribed</span>, being
+                {% set mode = apv['mode'] %}
+                {% if mode['mode'] == 'Monitor' %}
+                <strong>monitored</strong> with a <strong>delta of {{ mode['delta'] }}</strong> and
+                    {% if mode['max_freq'] %}
+                        a <strong>maximum frequency of {{ mode['max_freq'] }}</strong> 
+                    {% else %}
+                        <strong>no maximum frequency</strong>
+                    {% end %}
+                {% else %} {# scan #}
+                <strong>scanned</strong> with a <strong>period of {{ mode['period'] }} seconds</strong>
                 {% end %}
-            {% else %} {# scan #}
-            <strong>scanned</strong> with a <strong>period of {{ mode['period'] }} seconds</strong>
+                   since <abbr class="timeago" title="{{ since.isoformat() }}">{{since}}</abbr>
+            {% else %}
+                PV <strong>{{ apv['name'] }}</strong> is <span class="label label-important">not subscribed</span> since
+                <abbr class="timeago" title="{{ since.isoformat() }}">{{since}}</abbr>
             {% end %}
-               since <abbr class="timeago" title="{{ since.isoformat() }}">{{since}}</abbr>
-           </div>
 
+        </div>
         <div class="row">
             <h2>Connection History</h2>
             <ul>
