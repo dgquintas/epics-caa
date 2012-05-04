@@ -14,8 +14,6 @@ import collections
 import logging
 
 logger = logging.getLogger('tasks')
-
-
 task_id_generator = itertools.count()
 
 class Task(object):
@@ -358,12 +356,12 @@ class WorkersPool(object):
         # calculate the hash for the task based on its name
         h = adler32(task.name) % self.num_workers
         toworker_q = self._toworkers_qs[h]
-        toworker_q.put((taskfuture.futureid, task)) 
 
-        if not self._workers[h].is_alive():
+        if self._workers[h].is_alive():
+            toworker_q.put((taskfuture.futureid, task)) 
+        else:
             msg = "Worker '%d' has died!" % h
             logger.critical(msg)
-            raise RuntimeError(msg)
 
         return taskfuture 
 

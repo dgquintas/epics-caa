@@ -189,8 +189,9 @@ class ConfigHandler(BaseHandler):
     def put(self):
         data = self.request.body
         try:
-            res = [ str(uuid) for uuid in controller.load_config(data) ]
-            self.win(res)
+            futures = controller.load_config(data)
+            results = dict( (f.taskname, f.get(TIMEOUT)) for f in futures ) 
+            self.win(results)
         except Exception as e:
             self.fail(e)
 

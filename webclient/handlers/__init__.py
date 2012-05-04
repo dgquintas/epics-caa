@@ -1,4 +1,5 @@
 import json
+import operator
 import urllib
 from urlparse import urljoin
 import tornado.web
@@ -68,8 +69,9 @@ class RootHandler(BaseHandler):
         # statuses is a list of lists. In this case, all the sublists consist
         # of a single element (the last status). There'll be one sublist per
         # subscribed PV
-        statuses = dict((status[0]['pvname'], status[0]) for status in statuses) 
-        self.render("frontpage.html", all_apvs=all_apvs, subscribed_apvs=subscribed_apvs, statuses=statuses)
+        ss = dict((status[0]['pvname'], status[0]) for status in statuses if len(status) > 0) 
+        sorted_apvs = sorted(pvs_dict.values(), key=operator.itemgetter('name'))
+        self.render("frontpage.html", apvs=sorted_apvs, statuses=ss)
 
 class PVHandler(BaseHandler):
     @tornado.web.addslash

@@ -21,8 +21,8 @@ import caa.utils as utils
 
 logger = logging.getLogger('DataStore')
 
+cfg = settings.DATASTORE
 def _pool_factory():
-    cfg = settings.DATASTORE
     pool = pycassa.pool.ConnectionPool(cfg['keyspace'], cfg['servers'])
     logger.debug("Created connection pool with id '%d' for process '%s'", \
             id(pool), multiprocessing.current_process().name)
@@ -39,6 +39,8 @@ def _cf_factory(cfname):
     global G_POOLS
     procname = multiprocessing.current_process().name
     cf = pycassa.ColumnFamily(G_POOLS[procname], cfname)
+    cf.read_consistency_level = cfg['consistency']['read']
+    cf.write_consistency_level = cfg['consistency']['write']
     return cf
 
 def _cf(cfname):
@@ -73,7 +75,7 @@ def create_schema(server, keyspace, replication_factor=1, recreate=False):
         # without cleaning after itself (ie, after a crash)
         logger.debug("Performing cleanup")
 
-        allpvs = list_subscribed()
+        allpvs = ( pvname for pvname, _ in list_subscribed() )
         remove_subscriptions(allpvs)
     else: # keyspace doesn't exist. Create it
         #create it
