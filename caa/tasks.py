@@ -286,7 +286,9 @@ class Worker(Process):
         self.state = collections.defaultdict(dict)
 
     def run(self):
+        import signal
         logger.debug("At worker's run() method")
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         while True:
             taskbundle = self._inq.get()
 
@@ -388,7 +390,7 @@ class WorkersPool(object):
     def join(self):
         """ Blocks until all pending requests have finished """
         logger.debug("%s blocking until all pending requests finish.", self)
-        [ w.join() for w in self._workers ]
+        [ w.join(1) for w in self._workers ]
 
 
     def start(self):
