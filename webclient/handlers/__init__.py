@@ -1,7 +1,8 @@
 import json
+import time
 import operator
 import urllib
-from urlparse import urljoin
+import urlparse 
 import tornado.web
 import tornado.httpclient
 from tornado.options import options
@@ -20,7 +21,7 @@ config = settings.WEBCLIENT
 def _caa_httpclient():
     http = tornado.httpclient.HTTPClient()
     def fetch(path, **kwargs):
-        url = urljoin(baseurl, path)
+        url = urlparse.urljoin(baseurl, path)
         return http.fetch(url, **kwargs)
     return fetch
 
@@ -74,6 +75,10 @@ class RootHandler(BaseHandler):
                 statuses=ss)
 
 class PVHandler(BaseHandler):
+    def delete(self, pvname):
+        response = caa_fetch('/subscriptions/', method='DELETE')
+        self.write(json.loads(response.body))
+
     @tornado.web.addslash
     def get(self, pvname):
         response = caa_fetch('/archives/' + pvname) 
@@ -97,31 +102,73 @@ class PVHandler(BaseHandler):
         todate = self.get_argument('to_date', None)
         fromtime = self.get_argument('from_time', None)
         totime = self.get_argument('to_time', None)
-        
+
+        nextpage = self.get_argument('nextpage', None)
+        prevpage = self.get_argument('prevpage', None)
+
         args_list = [ ('field', f) for f in fields ]
+        args_list += [ ('field', 'archived_at') ]
         if limit:
             args_list += [('limit', limit)]
+        if nextpage:
+            args_list += [('nextpage', nextpage)]
+        if prevpage:
+            args_list += [('prevpage', prevpage)]
+            
         if fromdate and fromtime:
             # translate to epoch timestamp
             datetimestr = ' '.join((fromdate, fromtime))
             dt = datetime.strptime(datetimestr, '%Y/%m/%d HH:MM')
-            args_list += [('from_date', time.mktime(dt.timetuple()))]
+            ts = time.mktime(dt.timetuple()) * 1e6
+            args_list += [('from_ts', ts)]
         if todate and totime:
             # translate to epoch timestamp
             datetimestr = ' '.join((todate, totime))
             dt = datetime.strptime(datetimestr, '%Y/%m/%d HH:MM')
-            args_list += [('to_date', time.mktime(dt.timetuple()))]
+            ts = time.mktime(dt.timetuple()) * 1e6
+            args_list += [('to_ts', ts)]
 
         qargs = urllib.urlencode(args_list)
         response = caa_fetch('/values/' + pvname + '?' + qargs);
         body = json.loads(response.body)
-        values = body['response']
- 
-        self.render('pv.html', apv=apv, statuses=statuses, available_fields=available_fields, 
-                fields=fields, limit=limit, fromdate=fromdate, todate=todate, fromtime=fromtime, totime=totime,
-                values=values)
+        values_dict = body['response']
+        values = values_dict['rows']
+
+        current_url = self.request.full_url()
+        url_parts = urlparse.urlparse(current_url)
+        qargs = urlparse.parse_qsl(url_parts.query)
+        qargs[:] = [qarg for qarg in qargs if \
+                (qarg[0] not in ('nextpage', 'prevpage'))]
+
+        pointer_urls = {}
+        for pointer in ('nextpage', 'prevpage'):
+            url = values_dict.get(pointer)
+            if url:
+                # extract qarg
+                qarg = urlparse.parse_qs(url)[pointer][0]
+                # replace it in current url
+                qargs.append((pointer, qarg))
+                qs = urllib.urlencode(qargs)
+                pointer_urls[pointer] = \
+                        urlparse.urlunparse(url_parts._replace(query=qs))
+
+        self.render('pv.html', apv=apv, statuses=statuses, 
+        available_fields=available_fields, fields=fields, limit=limit, 
+        fromdate=fromdate, todate=todate, fromtime=fromtime, totime=totime, 
+        values=values, nextpage=pointer_urls['nextpage'], 
+        prevpage=pointer_urls['prevpage'])
 
 class SubscriptionHandler(BaseHandler):
+    def delete(self):
+        response = caa_fetch('/subscriptions/', method='DELETE')
+        self.write(json.loads(response.body))
+        #if self.check_response(response):
+        #    self.render('successful_subscription.html', pvname=pvname, mode=mode)
+        #else:
+        #    self.render('unsuccessful_subscription.html', pvname=pvname, 
+        #            request=request_json, response=response)
+
+
     def post(self):
         # body must contain 'pvname' and 'mode'
         body_json = self.request.body

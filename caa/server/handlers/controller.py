@@ -1,11 +1,12 @@
 from handlers.base import BaseHandler
 import json 
+import urlparse
+import urllib 
 import tornado.web
 
 from caa import controller, SubscriptionMode
 
 import logging
-import datetime 
 
 logger = logging.getLogger('server.caa.' + __name__)
 
@@ -144,41 +145,63 @@ class PVStatusesHandler(BaseHandler):
 
 ##########################################################################
 
-#class RootValuesHandler(BaseHandler):
-#    @tornado.web.addslash
-#    def get(self):
-#        fields = self.get_arguments('field')
-#        limit = int(self.get_argument('limit', default=1))
-#        from_date = self.get_argument('from_date', default=None)
-#        to_date = self.get_argument('to_date', default=None)
-#
-#        # transform from_date and to_date from epoch secs to datetime
-#        if from_date:
-#            from_date = datetime.datetime.fromtimestamp(float(from_date))
-#        if to_date:
-#            to_date = datetime.datetime.fromtimestamp(float(to_date))
-#        
-#        values = controller.get_values(pvname, fields, limit, from_date, to_date) 
-#
-#        self.win(values)
-
 class PVValuesHandler(BaseHandler):
     def get(self, pvname):
         fields = self.get_arguments('field')
         limit = int(self.get_argument('limit', default=10))
-        from_date = self.get_argument('from_date', default=None)
-        to_date = self.get_argument('to_date', default=None)
+        from_ts = self.get_argument('from_ts', default=None)
+        to_ts = self.get_argument('to_ts', default=None)
 
-        # transform from_date and to_date from epoch secs to datetime
-        if from_date:
-            from_date = datetime.datetime.fromtimestamp(float(from_date))
-        if to_date:
-            to_date = datetime.datetime.fromtimestamp(float(to_date))
-        res = controller.get_values(pvname, fields, limit, from_date, to_date)
-        self.win(res)
+
+        nextpage = self.get_argument('nextpage', None)
+        prevpage = self.get_argument('prevpage', None)
+        
+        reverse = True
+        if nextpage:
+            from_ts = nextpage
+        if prevpage:
+            from_ts = prevpage
+            reverse = False
+
+
+        rows = controller.get_values(pvname, fields, limit+1, from_ts, to_ts, reverse)
+        if prevpage: # we come from a prevpage link
+            rows.reverse()
+
+        next_url = None
+        prev_url = None
+        
+        if rows:
+            # check if we are at the end
+            if len(rows) > limit: #not at the end
+                last = rows.pop()
+                next_ts = last['archived_at_ts']
+            else: # at the end
+                next_ts = None
+
+            curr_hdr_st = rows[0]['archived_at_ts']
+             
+            current_url = self.request.full_url()
+            url_parts = urlparse.urlparse(current_url)
+            qargs = urlparse.parse_qsl(url_parts.query)
+            qargs[:] = [qarg for qarg in qargs if \
+                    (qarg[0] not in ('nextpage', 'prevpage'))]
+            
+            if next_ts:
+                qargs.append(('nextpage', next_ts))
+                qs = urllib.urlencode(qargs)
+                next_url = urlparse.urlunparse(url_parts._replace(query=qs))
+                qargs.pop() # restore, get ready for prevpage
+
+            qargs.append(('prevpage', curr_hdr_st))
+            qs = urllib.urlencode(qargs)
+            prev_url = urlparse.urlunparse(url_parts._replace(query=qs))
+
+        self.win({'rows': rows, 
+                  'nextpage': next_url,
+                  'prevpage': prev_url})
 
 ##########################################################################
-
 
 class ConfigHandler(BaseHandler):
     def get(self):
