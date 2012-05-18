@@ -100,7 +100,9 @@ $(document).ready(function() {
                     {% else %}
                         <td class="min-width"><span class="label label-important">Not Subscribed</span></td>
                         <td>{{ since.ctime() }} (<span class="timeago" title="{% raw since.isoformat() %}"></span>)</td>
-                        <td ><a class="btn btn-mini btn-success"><i class="icon-ok icon-white"></i> Subscribe</a></td>
+                        <td><button class="btn btn-mini btn-success" 
+                                id="subscribe-button" pvname={{apv['name']}}>
+                                <i class="icon-ok icon-white"></i> Subscribe</button></td>
                     {% end %}
                     </tr>
                 {% end %}
