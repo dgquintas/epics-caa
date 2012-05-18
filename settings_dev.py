@@ -1,6 +1,10 @@
+import pycassa 
+
 DATASTORE = {'keyspace':            'caaTest', 
              'servers':             ['localhost:9160', ],
              'replication_factor':  1,
+             'consistency':         {'read': pycassa.ConsistencyLevel.QUORUM,
+                                     'write':pycassa.ConsistencyLevel.ONE},
              'status_ttl':          2, # in seconds
 }
 
