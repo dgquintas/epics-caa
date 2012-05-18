@@ -91,7 +91,7 @@ class Settings(object):
 
         try:
             mod = importlib.import_module(self.SETTINGS_MODULE)
-        except ImportError, e:
+        except ImportError as e:
             raise ImportError("Could not import settings '%s' (Is it on sys.path?): %s" % (self.SETTINGS_MODULE, e))
 
         for setting in dir(mod):
