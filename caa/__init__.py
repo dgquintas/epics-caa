@@ -49,7 +49,7 @@ class SubscriptionMode(object):
 class _Monitor(dict, SubscriptionMode):
     name = 'Monitor'
 
-    def __init__(self, delta=0.0, max_freq=None, **dummy):
+    def __init__(self, delta, max_freq=None, **dummy):
         """ 
             :param delta: by how much incoming values must differ from the last archived one.
             :param max_freq: maximum archiving frequency. Data arriving faster than this is discarded.
