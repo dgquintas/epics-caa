@@ -262,7 +262,7 @@ def read_pvs(pvnames):
             for pvname, cols in pvrows.iteritems() )
     return pvs 
 
-def read_values(pvname, fields, limit, ini, end):
+def read_values(pvname, fields, limit, ini, end, reverse):
     """ Returns a list of at most `limit` elements (dicts) for `pvname` from
         `ini` until `end`.
 
@@ -276,37 +276,35 @@ def read_values(pvname, fields, limit, ini, end):
     def _join_timeline_with_updates(timeline):
         # timeline is a dict of the form (timestamp, update_id)...
         # join with UPDATES based on update_id
+        # returns a list of dicts: [{ PV stuff }, ..., {PV stuff}]
 
         # get all the update_ids
         update_ids = timeline.values()
         # now retrieve those with a multiget
-        updates = _cf('updates').multiget(update_ids) # updates is a dict { up_id: { pv: ..., value: ...} }
-        res = []
+        updates_cf = _cf('updates')
+        updates = updates_cf.multiget(update_ids) # updates is a dict { up_id: { pv: ..., value: ...} }
+        rows = []
         for pv_data in updates.itervalues():
-            out_data = {}
+            out_data = {'archived_at_ts': json.loads(pv_data['archived_at_ts']),
+                        'archived_at': json.loads(pv_data['archived_at'])}
             for k in (fields or pv_data.keys()):
                 if k not in pv_data:
                     logger.warning("Field '%s' not found in PV data '%s'", k, pv_data)
                 out_data[k] = json.loads(pv_data.get(k) or 'null') 
 
-            res.append(out_data)
-        return res
+            rows.append(out_data)
+        return rows
 
-    # turn datetime's into timestamps (secs from epoch). 
-    # And then into ms, as that's how the timestamps are represented
-    # in the cf
-    ts_ini = ini and time.mktime(ini.timetuple()) * 1e6 or ''
-    ts_end = end and time.mktime(end.timetuple()) * 1e6 or ''
+    ts_ini = int(ini) if ini else ''
+    ts_end = int(end) if end else ''
 
     try: 
         timeline = _cf('update_timeline').get(pvname, \
-                column_count=limit, column_reversed=True,\
-                column_start=ts_end, column_finish=ts_ini)
+                column_count=limit, column_reversed=reverse,\
+                column_start=ts_ini, column_finish=ts_end)
+        rows = _join_timeline_with_updates(timeline)
     except pycassa.NotFoundException:
-        return []
-    res = _join_timeline_with_updates(timeline)
-    return res
+        rows = []
 
-##########################################################
-
+    return rows
 

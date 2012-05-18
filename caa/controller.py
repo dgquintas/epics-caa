@@ -4,7 +4,6 @@ import json
 import logging
 import uuid
 import time 
-import signal
 import datetime 
 import itertools
 #try:
@@ -59,7 +58,7 @@ def munsubscribe(pvnames):
     futures = []
     pvs_dict = get_apvs(pvnames)
     datastore.remove_subscriptions(pvs_dict.iterkeys())
-    for pvname in pvnames: # to maintain the order
+    for pvname in sorted(pvs_dict): # to maintain the order
         apv = pvs_dict[pvname]
         if apv['subscribed']:
             task = Task(pvname, epics_unsubscribe, pvname)
@@ -84,9 +83,9 @@ def get_statuses(pvname, limit=10):
     res = [{'pvname': pvname, 'timestamp': st[0], 'connected': st[1]} for st in sts] 
     return res
 
-def get_values(pvname, fields=[], limit=100, from_date=None, to_date=None):
+def get_values(pvname, fields=[], limit=100, from_ts=None, to_ts=None, reverse=True):
     """ Returns latest archived data for the PV as a list with at most ``limit`` elements """
-    return datastore.read_values(pvname, fields, limit, from_date, to_date)
+    return datastore.read_values(pvname, fields, limit, from_ts, to_ts, reverse)
 
 def get_apv(pvname):
     return get_apvs([pvname]).get(pvname)
