@@ -25,15 +25,6 @@ $(document).ready(function() {
         dp_from.datepicker('setEndDate', ev.date);
     });
 
-//////////////////////////////
-
-    $('button#subscribe-button').click( function() {
-        var pvname = $(this).attr('pvname');
-        var modal = $('div#subscription_modal');
-        $('input:text[name=pvname]',modal).val(pvname).prop('readonly', 'readonly');
-        modal.modal('show');
-    });
-
 
 //////////////////////////////
 
@@ -57,6 +48,10 @@ $(document).ready(function() {
                  "sType": "numeric", 
                  "sClass": "timestamp_td", 
                  "sWidth": "120px" },
+            { "aTargets": [ "archived_at_col" ], 
+                 "sType": "date", 
+                 "sClass": "archived_at_td", 
+                 "sWidth": "200px" }
         ], 
         "oTableTools": {
 			"sSwfPath": "/static/swf/copy_cvs_xls_pdf.swf", 
