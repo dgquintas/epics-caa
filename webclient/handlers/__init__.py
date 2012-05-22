@@ -62,7 +62,7 @@ class RootHandler(BaseHandler):
         body = json.loads(response.body)
 
         all_apvs = sorted(body['response'].values(), key=operator.itemgetter('name'))
-        subscribed_apvs = (apv for apv in all_apvs if apv['subscribed'])
+        subscribed_apvs = sorted((apv for apv in all_apvs if apv['subscribed']), key=operator.itemgetter('name'))
 
         response = caa_fetch('/statuses/')
         body = json.loads(response.body)
