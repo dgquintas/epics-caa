@@ -155,8 +155,11 @@ def shutdown():
 
     logger.info("Shutdown completed")
 
-def initialize(replication_factor=2, recreate=False):
-    datastore.create_schema(settings.DATASTORE['servers'][0], settings.DATASTORE['keyspace'],\
+def initialize(replication_factor=None, recreate=False):
+    replication_factor = replication_factor or \
+            settings.DATASTORE['replication_factor']
+    datastore.create_schema(settings.DATASTORE['servers'][0], 
+            settings.DATASTORE['keyspace'],
             replication_factor, recreate)
 
 
@@ -276,15 +279,14 @@ def connection_cb(pvname, conn, **kw):
     if not conn:
         # save PV data with PV value as None/null
         update_id = uuid.uuid1()
-        datastore.save_update(update_id, timestamp=time.time(), pvname=pvname, value=None) 
+        datastore.save_update(update_id, timestamp=time.time(), 
+                pvname=pvname, value=None) 
 
 def _gather_pv_data(pv):
     to_consider = itertools.chain.from_iterable(
             settings.ARCHIVER['pvfields'].values())
     
     data = dict( (k, getattr(pv, k)) for k in to_consider)
-    #dt = datetime.datetime.fromtimestamp(data['timestamp'])
-    #data['datetime'] = dt.isoformat(' ')
     return data
 
 ##############################################################
