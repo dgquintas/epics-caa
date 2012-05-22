@@ -21,6 +21,9 @@ class TornadoApp(tornado.web.Application):
     def __init__(self):
         tornado.web.Application.__init__(self, url_patterns, **settings)
 def main():
+
+    controller.initialize()
+
     app = TornadoApp()
     http_server = tornado.httpserver.HTTPServer(app)
     http_server.listen(options.port)

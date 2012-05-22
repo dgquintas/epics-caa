@@ -10,9 +10,6 @@ import logging
 
 logger = logging.getLogger('server.caa.' + __name__)
 
-# XXX: this is kinda dirty. Maybe it should be handled independently of this server
-controller.initialize()
-
 TIMEOUT = 1
 
 class RootArchivesHandler(BaseHandler):
