@@ -13,7 +13,8 @@ import time
 import json
 import datetime
 import multiprocessing
-from collections import defaultdict
+import collections 
+import functools
 
 from caa import SubscriptionMode, ArchivedPV
 from conf import settings
@@ -30,10 +31,10 @@ def _pool_factory():
 
 
 # holds a pycassa connection pool per process
-G_POOLS = defaultdict(_pool_factory)
+G_POOLS = collections.defaultdict(_pool_factory)
 
 # map of process -> column families (cfname -> cfinstance)
-G_CFS = defaultdict(dict)
+G_CFS = collections.defaultdict(dict)
 
 def _cf_factory(cfname):
     global G_POOLS
@@ -55,15 +56,29 @@ def _get_timestamp_ms():
     ts = int(time.time() * 1e6)
     return ts
 
-class DataStoreError(Exception):
-    pass
+class _JSONDecoder(json.JSONDecoder):
+    def __init__(self):
+        json.JSONDecoder.__init__(self, object_hook=_JSONDecoder._hooks)
+    @staticmethod
+    def _hooks(dct):
+        if '__array__' in dct:
+            return dct['__array__']
+        else:
+            return dct
 
-class NotFound(DataStoreError):
-    pass
+class _JSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, collections.Iterable):
+            return {'__array__': list(obj)}
+        else:
+            return json.JSONEncoder.default(self, obj)
+
+dumps = functools.partial(json.dumps, cls=_JSONEncoder)
+loads = functools.partial(json.loads, cls=_JSONDecoder)
 
 #####################################################
 
-def create_schema(server, keyspace, replication_factor=1, recreate=False):
+def create_schema(server, keyspace, replication_factor, recreate):
     sm = pycassa.system_manager.SystemManager(server)
     if recreate:
         if keyspace in sm.list_keyspaces():
@@ -80,7 +95,8 @@ def create_schema(server, keyspace, replication_factor=1, recreate=False):
     else: # keyspace doesn't exist. Create it
         #create it
         sm.create_keyspace(keyspace, 
-                pycassa.system_manager.SIMPLE_STRATEGY, {'replication_factor': '1'})
+                pycassa.system_manager.SIMPLE_STRATEGY, 
+                {'replication_factor': str(replication_factor)}) 
         logger.debug("Keyspace %s created", keyspace)
 
 
@@ -106,7 +122,8 @@ def create_schema(server, keyspace, replication_factor=1, recreate=False):
         sm.create_column_family(keyspace, 'pvs', 
                 comparator_type=pycassa.UTF8_TYPE, 
                 default_validation_class=pycassa.UTF8_TYPE, 
-                key_validation_class=pycassa.UTF8_TYPE)
+                key_validation_class=pycassa.UTF8_TYPE, 
+                compression_options={'sstable_compression': 'DeflateCompressor'})
         sm.alter_column(keyspace, 'pvs', 'subscribed', pycassa.BOOLEAN_TYPE)
         sm.alter_column(keyspace, 'pvs', 'since', pycassa.LONG_TYPE)
 
@@ -138,7 +155,8 @@ def create_schema(server, keyspace, replication_factor=1, recreate=False):
         sm.create_column_family(keyspace, 'updates', 
                 comparator_type=pycassa.UTF8_TYPE, 
                 default_validation_class=pycassa.UTF8_TYPE, 
-                key_validation_class=pycassa.TIME_UUID_TYPE)
+                key_validation_class=pycassa.TIME_UUID_TYPE,
+                compression_options={'sstable_compression': 'DeflateCompressor'})
 
      
 def reset_schema(server, keyspace, drop=False):
@@ -159,12 +177,12 @@ def reset_schema(server, keyspace, drop=False):
 def save_update(update_id, pvname, value, **extra):
     ts_ms = _get_timestamp_ms()
     ts_readable = datetime.datetime.fromtimestamp(time.time()).isoformat(' ')
+    d = dict( (k, dumps(v)) for k,v in extra.iteritems() )
 
-    d = dict( (k, json.dumps(v)) for k,v in extra.iteritems() )
-    d.update( {'pvname': json.dumps(pvname), 
-               'value': json.dumps(value),
-               'archived_at': json.dumps(ts_readable),
-               'archived_at_ts': json.dumps(ts_ms),
+    d.update( {'pvname': dumps(pvname), 
+               'value': dumps(value),
+               'archived_at': dumps(ts_readable),
+               'archived_at_ts': dumps(ts_ms),
                }
             )
     logger.debug("Saving update '(%s, %s)'", \
@@ -188,7 +206,7 @@ def add_subscriptions(pvnames, modes):
 
     for pvname, mode in zip(pvnames, modes):
         modename = mode['mode']
-        mode_jsoned = json.dumps(mode)
+        mode_jsoned = dumps(mode)
 
         d = {'modename': modename, 'mode': mode_jsoned, 
              'since': _get_timestamp_ms(), 'subscribed': True} 
@@ -252,7 +270,7 @@ def read_pvs(pvnames):
         subscribed = cols['subscribed']
         since = cols['since']
         if subscribed:
-            modedict = json.loads(cols['mode'])
+            modedict = loads(cols['mode'])
             mode = SubscriptionMode.parse(modedict)
             return ArchivedPV(pvname, subscribed, mode, since)
         return ArchivedPV(pvname, subscribed, since=since)
@@ -285,12 +303,12 @@ def read_values(pvname, fields, limit, ini, end, reverse):
         updates = updates_cf.multiget(update_ids) # updates is a dict { up_id: { pv: ..., value: ...} }
         rows = []
         for pv_data in updates.itervalues():
-            out_data = {'archived_at_ts': json.loads(pv_data['archived_at_ts']),
-                        'archived_at': json.loads(pv_data['archived_at'])}
+            out_data = {'archived_at_ts': loads(pv_data['archived_at_ts']),
+                        'archived_at': loads(pv_data['archived_at'])}
             for k in (fields or pv_data.keys()):
                 if k not in pv_data:
                     logger.warning("Field '%s' not found in PV data '%s'", k, pv_data)
-                out_data[k] = json.loads(pv_data.get(k) or 'null') 
+                out_data[k] = loads(pv_data.get(k) or 'null') 
 
             rows.append(out_data)
         return rows
