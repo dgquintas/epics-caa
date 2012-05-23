@@ -57,8 +57,8 @@ def _get_timestamp_ms():
     return ts
 
 class _JSONDecoder(json.JSONDecoder):
-    def __init__(self):
-        json.JSONDecoder.__init__(self, object_hook=_JSONDecoder._hooks)
+    def __init__(self, *args, **kwargs):
+        json.JSONDecoder.__init__(self, object_hook=_JSONDecoder._hooks, *args, **kwargs)
     @staticmethod
     def _hooks(dct):
         if '__array__' in dct:
@@ -270,6 +270,8 @@ def read_pvs(pvnames):
         subscribed = cols['subscribed']
         since = cols['since']
         if subscribed:
+            import pdb; pdb.set_trace()
+            
             modedict = loads(cols['mode'])
             mode = SubscriptionMode.parse(modedict)
             return ArchivedPV(pvname, subscribed, mode, since)
