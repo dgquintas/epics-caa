@@ -211,7 +211,6 @@ def epics_unsubscribe(state, pvname):
 def epics_periodic(state, pvname, period):
     """ Invoked every time a period for a scanned PV is due """
     logger.debug("Periodic scan for PV '%s' with period %f secs", pvname, period)
-    
     # get the pv's value
     pv = state.get('pv')
     if pv:
@@ -286,7 +285,11 @@ def _gather_pv_data(pv):
     to_consider = itertools.chain.from_iterable(
             settings.ARCHIVER['pvfields'].values())
     
+
     data = dict( (k, getattr(pv, k)) for k in to_consider)
+
+    if pv.nelm > 1:
+        data['value'] = list(data['value'])
     return data
 
 ##############################################################

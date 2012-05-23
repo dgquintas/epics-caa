@@ -56,25 +56,8 @@ def _get_timestamp_ms():
     ts = int(time.time() * 1e6)
     return ts
 
-class _JSONDecoder(json.JSONDecoder):
-    def __init__(self, *args, **kwargs):
-        json.JSONDecoder.__init__(self, object_hook=_JSONDecoder._hooks, *args, **kwargs)
-    @staticmethod
-    def _hooks(dct):
-        if '__array__' in dct:
-            return dct['__array__']
-        else:
-            return dct
-
-class _JSONEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, collections.Iterable):
-            return {'__array__': list(obj)}
-        else:
-            return json.JSONEncoder.default(self, obj)
-
-dumps = functools.partial(json.dumps, cls=_JSONEncoder)
-loads = functools.partial(json.loads, cls=_JSONDecoder)
+dumps = json.dumps
+loads = json.loads
 
 #####################################################
 
