@@ -270,8 +270,6 @@ def read_pvs(pvnames):
         subscribed = cols['subscribed']
         since = cols['since']
         if subscribed:
-            import pdb; pdb.set_trace()
-            
             modedict = loads(cols['mode'])
             mode = SubscriptionMode.parse(modedict)
             return ArchivedPV(pvname, subscribed, mode, since)
