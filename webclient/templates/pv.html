@@ -169,8 +169,12 @@
             <small>
                 <a href="#" id="values-seemore"><span class="badge"><i class="icon-plus icon-white" title="Get more"></i></span></a>
                 <a href="#" id="values-seeless"><span class="badge"><i class="icon-minus icon-white" title="Get less"></i></span></a>
-                <a href="{{prevpage}}" id="values-prevpage"><span class="badge"><i class="icon-chevron-left icon-white" title="Previous page"></i></span></a>
-                <a href="{{nextpage}}" id="values-nextpage"><span class="badge"><i class="icon-chevron-right icon-white" title="Next page"></i></span></a>
+                {% if prevpage %}
+                    <a href="{{prevpage}}" id="values-prevpage"><span class="badge"><i class="icon-chevron-left icon-white" title="Previous page"></i></span></a>
+                {% end %} 
+                {% if nextpage %}
+                    <a href="{{nextpage}}" id="values-nextpage"><span class="badge"><i class="icon-chevron-right icon-white" title="Next page"></i></span></a>
+                {% end %} 
             </small></h2>
         <table class="table table-striped table-bordered" id="valuestable">
             <thead>
