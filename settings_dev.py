@@ -1,4 +1,4 @@
-import pycassa 
+import pycassa
 
 DATASTORE = {'keyspace':            'caaTest', 
              'servers':             ['localhost:9160', ],
@@ -15,7 +15,7 @@ CONTROLLER = {'epics_connection_timeout':   0.1, #in seconds
 
 ARCHIVER = {'pvfields': 
                  {'data': ['value', 'count', 'type', 'units', 'precision'],
-                  'time': ['timestamp'],
+                  'time': ['timestamp', 'archived_at', 'archived_at_ts'],
                   'alarms': ['severity', 'upper_disp_limit', 
                              'lower_disp_limit', 'upper_alarm_limit', 
                              'lower_alarm_limit','upper_warning_limit', 
@@ -24,4 +24,4 @@ ARCHIVER = {'pvfields':
                   'epics': ['pvname', 'status', 'host', 'access']}
 }
 
-WEBCLIENT = {'default_table_fields': ['timestamp', 'value', 'status', 'type'], }
+WEBCLIENT = {'default_table_fields': ['timestamp', 'archived_at',  'value', 'status', 'type'], }
