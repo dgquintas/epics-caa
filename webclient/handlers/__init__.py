@@ -151,12 +151,13 @@ class PVHandler(BaseHandler):
                 qs = urllib.urlencode(qargs)
                 pointer_urls[pointer] = \
                         urlparse.urlunparse(url_parts._replace(query=qs))
+                qargs.pop() # get ready for next one
 
         self.render('pv.html', apv=apv, statuses=statuses, 
         available_fields=available_fields, fields=fields, limit=limit, 
         fromdate=fromdate, todate=todate, fromtime=fromtime, totime=totime, 
-        values=values, nextpage=pointer_urls['nextpage'], 
-        prevpage=pointer_urls['prevpage'])
+        values=values, nextpage=pointer_urls.get('nextpage'), 
+        prevpage=pointer_urls.get('prevpage'))
 
 class SubscriptionHandler(BaseHandler):
     def delete(self):

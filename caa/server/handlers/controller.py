@@ -160,23 +160,30 @@ class PVValuesHandler(BaseHandler):
             from_ts = prevpage
             reverse = False
 
-
-        rows = controller.get_values(pvname, fields, limit+1, from_ts, to_ts, reverse)
-        if prevpage: # we come from a prevpage link
-            rows.reverse()
-
         next_url = None
         prev_url = None
-        
+        at_first_page = False
+ 
+        rows = controller.get_values(pvname, fields, limit+1, from_ts, to_ts, reverse)
+        if prevpage: # we come from a prevpage link
+            # if a prevpage has been requested while already at the first page, 
+            # a single row is returned, that with the prevpage's pointer value
+            # in its archived_at_ts field
+            at_first_page = len(rows) == 1
+            if not at_first_page:
+                rows.reverse()
+
+                
+
+       
         if rows:
             # check if we are at the end
-            if len(rows) > limit: #not at the end
+            if len(rows) > limit or at_first_page: #not at the end
                 last = rows.pop()
                 next_ts = last['archived_at_ts']
             else: # at the end
                 next_ts = None
 
-            curr_hdr_st = rows[0]['archived_at_ts']
              
             current_url = self.request.full_url()
             url_parts = urlparse.urlparse(current_url)
@@ -189,10 +196,13 @@ class PVValuesHandler(BaseHandler):
                 qs = urllib.urlencode(qargs)
                 next_url = urlparse.urlunparse(url_parts._replace(query=qs))
                 qargs.pop() # restore, get ready for prevpage
+            
+            if not at_first_page:
+                curr_hdr_st = rows[0]['archived_at_ts']
 
-            qargs.append(('prevpage', curr_hdr_st))
-            qs = urllib.urlencode(qargs)
-            prev_url = urlparse.urlunparse(url_parts._replace(query=qs))
+                qargs.append(('prevpage', curr_hdr_st))
+                qs = urllib.urlencode(qargs)
+                prev_url = urlparse.urlunparse(url_parts._replace(query=qs))
 
         self.win({'rows': rows, 
                   'nextpage': next_url,
