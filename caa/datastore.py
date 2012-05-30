@@ -263,6 +263,8 @@ def read_pvs(pvnames):
             for pvname, cols in pvrows.iteritems() )
     return pvs 
 
+
+
 def read_values(pvname, fields, limit, ini, end, reverse):
     """ Returns a list of at most `limit` elements (dicts) for `pvname` from
         `ini` until `end`.
@@ -309,3 +311,8 @@ def read_values(pvname, fields, limit, ini, end, reverse):
 
     return rows
 
+def read_count(pvname, from_ts):
+    timeline = _cf('update_timeline')
+    ini = int(from_ts) if from_ts else ''
+    return timeline.get_count(pvname, column_start=ini, column_reversed=True)
+    

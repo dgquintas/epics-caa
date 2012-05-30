@@ -153,10 +153,14 @@ class PVHandler(BaseHandler):
                         urlparse.urlunparse(url_parts._replace(query=qs))
                 qargs.pop() # get ready for next one
 
+        count_total = values_dict['count_total']
+        count_remaining = values_dict['count_remaining']
         self.render('pv.html', apv=apv, statuses=statuses, 
         available_fields=available_fields, fields=fields, limit=limit, 
         fromdate=fromdate, todate=todate, fromtime=fromtime, totime=totime, 
         values=values, nextpage=pointer_urls.get('nextpage'), 
+        prevpage=pointer_urls.get('prevpage'),
+        count_total=count_total, count_remaining=count_remaining)
         prevpage=pointer_urls.get('prevpage'))
 
 class SubscriptionHandler(BaseHandler):

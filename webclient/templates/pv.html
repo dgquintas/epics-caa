@@ -175,6 +175,8 @@
                 {% if nextpage %}
                     <a href="{{nextpage}}" id="values-nextpage"><span class="badge"><i class="icon-chevron-right icon-white" title="Next page"></i></span></a>
                 {% end %} 
+                Displaying from row {{ count_total - count_remaining}} / {{ count_total }}.
+
             </small></h2>
         <table class="table table-striped table-bordered" id="valuestable">
             <thead>

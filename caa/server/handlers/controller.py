@@ -165,6 +165,10 @@ class PVValuesHandler(BaseHandler):
         at_first_page = False
  
         rows = controller.get_values(pvname, fields, limit+1, from_ts, to_ts, reverse)
+        count_total = controller.get_count(pvname)
+        count_remaining = controller.get_count(pvname, from_ts) 
+
+        
         if prevpage: # we come from a prevpage link
             # if a prevpage has been requested while already at the first page, 
             # a single row is returned, that with the prevpage's pointer value
@@ -172,8 +176,6 @@ class PVValuesHandler(BaseHandler):
             at_first_page = len(rows) == 1
             if not at_first_page:
                 rows.reverse()
-
-                
 
        
         if rows:
@@ -204,7 +206,9 @@ class PVValuesHandler(BaseHandler):
                 qs = urllib.urlencode(qargs)
                 prev_url = urlparse.urlunparse(url_parts._replace(query=qs))
 
-        self.win({'rows': rows, 
+        self.win({'rows': rows,
+                  'count_total': count_total,
+                  'count_remaining': count_remaining,
                   'nextpage': next_url,
                   'prevpage': prev_url})
 

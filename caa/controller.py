@@ -87,6 +87,9 @@ def get_values(pvname, fields=[], limit=100, from_ts=None, to_ts=None, reverse=T
     """ Returns latest archived data for the PV as a list with at most ``limit`` elements """
     return datastore.read_values(pvname, fields, limit, from_ts, to_ts, reverse)
 
+def get_count(pvname, from_ts=None):
+    return datastore.read_count(pvname, from_ts)
+
 def get_apv(pvname):
     return get_apvs([pvname]).get(pvname)
 
